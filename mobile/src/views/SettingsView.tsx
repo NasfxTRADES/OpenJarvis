@@ -165,10 +165,10 @@ export function SettingsView({
       <section className="setting-card">
         <h3>Google Gemini — free Flash models</h3>
         <p className="muted small">
-          Create a free key at aistudio.google.com/apikey. Gemini's free tier
-          covers the Flash models, with an allowance per project rather than per
-          key. On the free tier Google may use your prompts to improve its
-          products.
+          Create a free key at aistudio.google.com/apikey — new keys start with
+          <code>AQ.</code> and work as-is. Gemini's free tier covers the Flash
+          models, with an allowance per project rather than per key. On the free
+          tier Google may use your prompts to improve its products.
         </p>
         {status?.gemini_key_source ? (
           <div className="stack">
@@ -194,7 +194,7 @@ export function SettingsView({
               type="password"
               value={geminiKey}
               onChange={(event) => setGeminiKey(event.target.value)}
-              placeholder="AIza…"
+              placeholder="Paste your Gemini key"
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
