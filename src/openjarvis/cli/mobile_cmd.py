@@ -222,7 +222,15 @@ def mobile(
     access_key: str | None,
     use_tls: bool,
 ) -> None:
-    """Start the OpenJarvis phone app (chat, voice, task automation)."""
+    """Start the OpenJarvis phone app (chat, voice, task automation).
+
+    A free model is required, and the key never has to be typed into the
+    phone: save it to ~/.openjarvis/openrouter.key or
+    ~/.openjarvis/gemini.key (or point OPENROUTER_API_KEY_FILE /
+    GEMINI_API_KEY_FILE at a file). Use --tls for hold-to-talk voice on the
+    local network. Then open the printed URL in Safari and add it to the
+    home screen.
+    """
     print_banner(quiet=(ctx.obj or {}).get("quiet", False))
     console = Console(stderr=True)
 
