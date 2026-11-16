@@ -46,6 +46,35 @@ export function SettingsView({
     }
   };
 
+  // Some browsers (and embedded previews) refuse paste events on inputs.
+  // Reading the clipboard ourselves gives the user a working button, and a
+  // clear message when the browser blocks that too.
+  const pasteKey = async (apply: (value: string) => void) => {
+    setError('');
+    setNotice('');
+    try {
+      // Some browsers leave readText() pending forever when they quietly deny
+      // the permission, so never wait on it indefinitely.
+      const text = (
+        await Promise.race([
+          navigator.clipboard.readText(),
+          new Promise<string>((_, reject) =>
+            setTimeout(() => reject(new Error('clipboard timeout')), 2500),
+          ),
+        ])
+      ).trim();
+      if (!text) {
+        setError('Your clipboard looks empty. Copy the key again, then press Paste.');
+        return;
+      }
+      apply(text);
+    } catch {
+      setError(
+        'This browser will not hand over the clipboard. Tap the box and paste with Cmd/Ctrl+V, or paste on your own computer instead.',
+      );
+    }
+  };
+
   const submitKey = (event: FormEvent) => {
     event.preventDefault();
     if (!apiKey.trim()) return;
@@ -155,6 +184,14 @@ export function SettingsView({
               autoCorrect="off"
               spellCheck={false}
             />
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={busy !== null}
+              onClick={() => void pasteKey(setApiKey)}
+            >
+              Paste from clipboard
+            </button>
             <button type="submit" className="btn btn-primary" disabled={busy !== null || !apiKey.trim()}>
               {busy === 'openrouter' ? 'Connecting…' : 'Connect free model'}
             </button>
@@ -199,6 +236,14 @@ export function SettingsView({
               autoCorrect="off"
               spellCheck={false}
             />
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={busy !== null}
+              onClick={() => void pasteKey(setGeminiKey)}
+            >
+              Paste from clipboard
+            </button>
             <button
               type="submit"
               className="btn btn-primary"

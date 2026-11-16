@@ -30,6 +30,8 @@ from openjarvis.core.credentials import (
     load_gemini_key_file,
     load_openrouter_key_file,
     load_provider_key_files,
+    normalize_gemini_key,
+    normalize_openrouter_key,
     openrouter_api_base,
     openrouter_key_source,
     probe_gemini_generation,
@@ -397,7 +399,9 @@ class MobileRuntime:
         # phone can connect without anybody pasting a secret.
         if not (api_key or "").strip():
             load_openrouter_key_file()
-        key = (api_key or os.environ.get("OPENROUTER_API_KEY", "")).strip()
+        key = normalize_openrouter_key(
+            api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        )
         if not key:
             raise HTTPException(
                 status_code=400,
@@ -446,12 +450,12 @@ class MobileRuntime:
         # No key typed in? Fall back to one the server loaded from a file.
         if not (api_key or "").strip():
             load_gemini_key_file()
-        key = (
+        key = normalize_gemini_key(
             api_key
             or os.environ.get("GEMINI_API_KEY")
             or os.environ.get("GOOGLE_API_KEY")
             or ""
-        ).strip()
+        )
         if not key:
             raise HTTPException(
                 status_code=400,

@@ -268,6 +268,29 @@ def gemini_api_base() -> str:
     return _api_base(_GEMINI)
 
 
+def normalize_key(raw: str, env_names: tuple[str, ...]) -> str:
+    """Clean up a pasted key without altering its actual characters.
+
+    Handles the shapes a copy-paste picks up: surrounding quotes, an
+    ``NAME=`` prefix, ``Bearer ``, and stray newlines or spaces. A leading
+    ``AQ.`` (Google's current authorization-key prefix) is kept as-is.
+    """
+    value = (raw or "").strip().strip('"').strip("'").strip()
+    for name in env_names:
+        prefix = f"{name}="
+        if value.startswith(prefix):
+            value = value[len(prefix) :].strip()
+            break
+    else:
+        # An env-style line for a different name still carries just a key.
+        head, sep, tail = value.partition("=")
+        if sep and head.isupper() and head.replace("_", "").isalnum():
+            value = tail.strip()
+    if value.lower().startswith("bearer "):
+        value = value[len("bearer ") :].strip()
+    return "".join(value.split()).strip("'\"")
+
+
 def _read_provider_key(path: Path, env_names: tuple[str, ...]) -> str:
     """Return the key in ``path``, accepting a bare key or a NAME=value line."""
     try:
@@ -321,6 +344,16 @@ def _load_provider_key(spec: _KeySource) -> str:
         logger.info("Loaded %s key from %s", spec.label, path)
         return _key_sources[spec.label]
     return ""
+
+
+def normalize_openrouter_key(raw: str) -> str:
+    """Clean a pasted OpenRouter key (keeps it otherwise untouched)."""
+    return normalize_key(raw, _OPENROUTER.env_names)
+
+
+def normalize_gemini_key(raw: str) -> str:
+    """Clean a pasted Gemini key; the ``AQ.`` prefix is preserved."""
+    return normalize_key(raw, _GEMINI.env_names)
 
 
 def load_openrouter_key_file() -> str:
