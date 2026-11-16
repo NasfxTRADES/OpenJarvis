@@ -25,7 +25,11 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from openjarvis.core.credentials import (
+    gemini_api_base,
+    gemini_key_source,
+    load_gemini_key_file,
     load_openrouter_key_file,
+    load_provider_key_files,
     openrouter_api_base,
     openrouter_key_source,
 )
@@ -58,6 +62,15 @@ MOBILE_TOOL_ALLOWLIST: tuple[str, ...] = (
 # Used only when the live OpenRouter catalogue cannot be fetched. The first
 # entry is OpenRouter's own free-model router, so the default keeps working as
 # individual free models come and go.
+# Gemini's free tier covers the Flash models (per model, per project); Pro and
+# preview models need a billing account, so they are listed after these.
+GEMINI_MODEL_PREFERENCE: tuple[str, ...] = (
+    "google/gemini-3.8-flash",
+    "google/gemini-3.5-flash-lite",
+    "google/gemini-2.5-flash",
+    "google/gemini-2.5-flash-lite",
+)
+
 FALLBACK_FREE_MODELS: tuple[str, ...] = (
     "openrouter/openrouter/free",
     "openrouter/google/gemma-4-31b-it:free",
@@ -237,8 +250,8 @@ class MobileRuntime:
         self._scheduler: Any = None
         self._lock = threading.Lock()
         self._jobs: dict[str, float] = {}
-        # A key file on the server means the phone never has to paste one.
-        load_openrouter_key_file()
+        # Key files on the server mean the phone never has to paste one.
+        load_provider_key_files()
 
     # -- Lifecycle -----------------------------------------------------------
 
@@ -327,6 +340,7 @@ class MobileRuntime:
             "tasks": len(self.list_tasks()),
             "free_models": list(FALLBACK_FREE_MODELS),
             "key_source": openrouter_key_source(),
+            "gemini_key_source": gemini_key_source(),
             "scheduler": self._scheduler is not None,
             "server_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
@@ -369,6 +383,8 @@ class MobileRuntime:
         provider = (provider or "").strip().lower()
         if provider == "openrouter":
             return await self._configure_openrouter(api_key=api_key, model=model)
+        if provider == "gemini":
+            return await self._configure_gemini(api_key=api_key, model=model)
         if provider == "ollama":
             return await self._configure_ollama(model=model, base_url=base_url)
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider!r}")
@@ -422,6 +438,110 @@ class MobileRuntime:
             "model": chosen,
             "models": free_models,
         }
+
+    async def _configure_gemini(
+        self, *, api_key: str, model: str
+    ) -> dict[str, Any]:
+        # No key typed in? Fall back to one the server loaded from a file.
+        if not (api_key or "").strip():
+            load_gemini_key_file()
+        key = (
+            api_key
+            or os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("GOOGLE_API_KEY")
+            or ""
+        ).strip()
+        if not key:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "A Gemini API key is required (free to create at "
+                    "aistudio.google.com/apikey)."
+                ),
+            )
+
+        models = await self._gemini_models(key)
+        chosen = model.strip()
+        if not chosen or not chosen.startswith("google/"):
+            if chosen and "/" in chosen:
+                chosen = f"google/{chosen}"
+            else:
+                chosen = next(iter(models), GEMINI_MODEL_PREFERENCE[0])
+        if chosen not in models:
+            models = [chosen, *models]
+
+        _persist_cloud_key("GEMINI_API_KEY", key)
+        os.environ["GEMINI_API_KEY"] = key
+
+        try:
+            from openjarvis.engine.cloud import CloudEngine
+
+            engine = CloudEngine()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Cloud engine unavailable: {exc}"
+            ) from exc
+        if not engine.health() or not engine.can_serve(chosen):
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "Gemini support needs the Google client: "
+                    "uv sync --extra inference-google"
+                ),
+            )
+
+        self._activate(engine, chosen, provider="gemini", models=list(models))
+        return {
+            "configured": True,
+            "provider": "gemini",
+            "model": chosen,
+            "models": list(models),
+        }
+
+    async def _gemini_models(self, api_key: str) -> list[str]:
+        import httpx
+
+        url = f"{gemini_api_base()}/v1beta/models"
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.get(url, headers={"x-goog-api-key": api_key})
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not reach Gemini: {exc}",
+            ) from exc
+        if resp.status_code in (401, 403):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Google rejected that API key. Create a new one at "
+                    "aistudio.google.com/apikey."
+                ),
+            )
+        if resp.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Gemini returned HTTP {resp.status_code}.",
+            )
+
+        entries = resp.json().get("models", [])
+        available: dict[str, None] = {}
+        for entry in entries:
+            name = str(entry.get("name", "")).removeprefix("models/")
+            if not name or "gemini" not in name:
+                continue
+            methods = entry.get("supportedGenerationMethods") or []
+            if methods and "generateContent" not in methods:
+                continue
+            # Embedding, image and TTS models cannot hold a conversation.
+            if any(bad in name for bad in ("embedding", "image", "tts", "audio")):
+                continue
+            available[f"google/{name}"] = None
+
+        # Free-tier Flash models first; anything else the key can reach after.
+        ordered = [m for m in GEMINI_MODEL_PREFERENCE if m in available]
+        ordered.extend(m for m in available if m not in ordered)
+        return ordered or list(GEMINI_MODEL_PREFERENCE)
 
     async def _configure_ollama(self, *, model: str, base_url: str) -> dict[str, Any]:
         host = (base_url or os.environ.get("OLLAMA_HOST") or "").strip()

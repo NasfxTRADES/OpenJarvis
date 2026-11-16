@@ -40,6 +40,7 @@ def _resolve_engine(console: Console, model_override: str | None):
     """Return (engine, model, engine_name) for the current saved settings."""
     from openjarvis.server.mobile_routes import (
         FALLBACK_FREE_MODELS,
+        GEMINI_MODEL_PREFERENCE,
         UnconfiguredEngine,
         load_settings,
     )
@@ -61,6 +62,27 @@ def _resolve_engine(console: Console, model_override: str | None):
                 console.print(
                     "[yellow]Saved OpenRouter model is unavailable; "
                     "reconnect it in the phone app's Settings tab.[/yellow]"
+                )
+            except Exception as exc:
+                console.print(f"[yellow]Cloud engine unavailable: {exc}[/yellow]")
+        return UnconfiguredEngine(), "", "unconfigured"
+
+    gemini_key = (
+        os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
+    ).strip()
+    if provider == "gemini" or (not provider and gemini_key):
+        if gemini_key:
+            try:
+                from openjarvis.engine.cloud import CloudEngine
+
+                engine = CloudEngine()
+                model = saved_model or GEMINI_MODEL_PREFERENCE[0]
+                if engine.health() and engine.can_serve(model):
+                    return engine, model, "gemini"
+                console.print(
+                    "[yellow]Gemini support needs the Google client "
+                    "(uv sync --extra inference-google); reconnect it in the "
+                    "app's Settings tab once installed.[/yellow]"
                 )
             except Exception as exc:
                 console.print(f"[yellow]Cloud engine unavailable: {exc}[/yellow]")
@@ -215,7 +237,11 @@ def mobile(
         raise SystemExit(1)
 
     from openjarvis.core.credentials import (
+        gemini_key_source,
+        load_gemini_key_file,
         load_openrouter_key_file,
+        openrouter_key_source,
+        verify_gemini_key,
         verify_openrouter_key,
     )
     from openjarvis.server.mobile_routes import (
@@ -228,17 +254,40 @@ def mobile(
     if openrouter_key:
         os.environ["OPENROUTER_API_KEY"] = openrouter_key.strip()
 
-    # A key file lets the phone connect without anybody pasting a secret.
-    key_source = load_openrouter_key_file()
-    key_note = ""
-    if key_source.startswith("file:"):
-        valid, reason = verify_openrouter_key()
-        key_note = "verified" if valid else reason
-        if not valid:
-            # A rejected key is worse than none: the phone would show a live
-            # assistant whose every message fails. Start unconfigured instead
-            # and let Settings report the problem.
-            os.environ.pop("OPENROUTER_API_KEY", None)
+    # Key files let the phone connect without anybody pasting a secret.
+    key_lines: list[str] = []
+    load_openrouter_key_file()
+    load_gemini_key_file()
+    for label, source, verify, env_names in (
+        (
+            "OpenRouter",
+            openrouter_key_source(),
+            verify_openrouter_key,
+            ("OPENROUTER_API_KEY",),
+        ),
+        (
+            "Gemini",
+            gemini_key_source(),
+            verify_gemini_key,
+            ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        ),
+    ):
+        if source.startswith("file:"):
+            valid, reason = verify()
+            key_lines.append(
+                f"  Key:        [cyan]{source[len('file:') :]}[/cyan] "
+                f"({'verified' if valid else reason})"
+            )
+            if not valid:
+                # A rejected key is worse than none: the phone would show a
+                # live assistant whose every message fails. Start unconfigured
+                # and let Settings report the problem.
+                for env_name in env_names:
+                    os.environ.pop(env_name, None)
+        elif source:
+            key_lines.append(
+                f"  Key:        [cyan]{label}, from the environment[/cyan]"
+            )
 
     settings = load_settings()
     key = (access_key or os.environ.get("OPENJARVIS_API_KEY") or "").strip()
@@ -310,12 +359,7 @@ def mobile(
 
     lan_url = f"{scheme}://{lan_ip}:{port}/m"
     model_label = model or "not connected yet (use the app Settings tab)"
-    key_line = ""
-    if key_source.startswith("file:"):
-        path = key_source[len("file:") :]
-        key_line = f"  Key:        [cyan]{path}[/cyan] ({key_note})\n"
-    elif key_source == "environment":
-        key_line = "  Key:        [cyan]from the environment[/cyan]\n"
+    key_line = "".join(f"{line}\n" for line in key_lines)
     console.print(
         "[green]OpenJarvis mobile is ready[/green]\n"
         f"  Phone URL:  [cyan bold]{lan_url}[/cyan bold]\n"

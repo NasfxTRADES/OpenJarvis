@@ -451,7 +451,13 @@ class CloudEngine(InferenceEngine):
             try:
                 from google import genai
 
-                self._google_client = genai.Client(api_key=gemini_key)
+                # GEMINI_BASE_URL lets a proxy (or a local stand-in, as in the
+                # mobile tests) sit in front of the default endpoint.
+                google_base = (os.environ.get("GEMINI_BASE_URL") or "").rstrip("/")
+                self._google_client = genai.Client(
+                    api_key=gemini_key,
+                    http_options={"base_url": google_base} if google_base else None,
+                )
             except ImportError:
                 pass
         openrouter_key = os.environ.get("OPENROUTER_API_KEY")

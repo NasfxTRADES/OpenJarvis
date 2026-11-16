@@ -13,7 +13,8 @@ export function SettingsView({
   onChanged: () => void;
 }) {
   const [apiKey, setApiKey] = useState('');
-  const [busy, setBusy] = useState<'openrouter' | 'ollama' | 'model' | null>(null);
+  const [geminiKey, setGeminiKey] = useState('');
+  const [busy, setBusy] = useState<'openrouter' | 'gemini' | 'ollama' | 'model' | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [models, setModels] = useState<string[]>(status?.models || []);
@@ -25,7 +26,7 @@ export function SettingsView({
   }, [status?.models, status?.model]);
 
   const run = async (
-    kind: 'openrouter' | 'ollama' | 'model',
+    kind: 'openrouter' | 'gemini' | 'ollama' | 'model',
     body: { provider: string; api_key?: string; model?: string },
   ) => {
     setBusy(kind);
@@ -51,7 +52,18 @@ export function SettingsView({
     void run('openrouter', { provider: 'openrouter', api_key: apiKey.trim() });
   };
 
-  const provider = status?.provider === 'ollama' ? 'ollama' : 'openrouter';
+  const submitGeminiKey = (event: FormEvent) => {
+    event.preventDefault();
+    if (!geminiKey.trim()) return;
+    void run('gemini', { provider: 'gemini', api_key: geminiKey.trim() });
+  };
+
+  const provider =
+    status?.provider === 'ollama'
+      ? 'ollama'
+      : status?.provider === 'gemini'
+        ? 'gemini'
+        : 'openrouter';
 
   return (
     <div className="settings">
@@ -145,6 +157,54 @@ export function SettingsView({
             />
             <button type="submit" className="btn btn-primary" disabled={busy !== null || !apiKey.trim()}>
               {busy === 'openrouter' ? 'Connecting…' : 'Connect free model'}
+            </button>
+          </form>
+        )}
+      </section>
+
+      <section className="setting-card">
+        <h3>Google Gemini — free Flash models</h3>
+        <p className="muted small">
+          Create a free key at aistudio.google.com/apikey. Gemini's free tier
+          covers the Flash models, with an allowance per project rather than per
+          key. On the free tier Google may use your prompts to improve its
+          products.
+        </p>
+        {status?.gemini_key_source ? (
+          <div className="stack">
+            <p className="muted small">
+              This server already has a key from{' '}
+              <code>
+                {status.gemini_key_source.replace(/^file:/, '') || 'the environment'}
+              </code>
+              . Nothing to paste.
+            </p>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy !== null}
+              onClick={() => void run('gemini', { provider: 'gemini' })}
+            >
+              {busy === 'gemini' ? 'Connecting…' : 'Use the Gemini key'}
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={submitGeminiKey} className="stack">
+            <input
+              type="password"
+              value={geminiKey}
+              onChange={(event) => setGeminiKey(event.target.value)}
+              placeholder="AIza…"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={busy !== null || !geminiKey.trim()}
+            >
+              {busy === 'gemini' ? 'Connecting…' : 'Connect Gemini'}
             </button>
           </form>
         )}

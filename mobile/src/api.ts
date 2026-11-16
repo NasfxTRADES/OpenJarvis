@@ -25,6 +25,7 @@ export interface MobileStatus {
   tasks: number;
   free_models: string[];
   key_source?: string;
+  gemini_key_source?: string;
   scheduler: boolean;
   voice?: VoiceStatus;
   server_time: string;

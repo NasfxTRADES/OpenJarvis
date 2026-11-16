@@ -10,6 +10,7 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import tomlkit
@@ -214,20 +215,61 @@ def inject_credentials(path: Path | None = None) -> None:
 
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-_OPENROUTER_KEY_FILENAME = "openrouter.key"
+GEMINI_KEY_ENV = "GEMINI_API_KEY"
+GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"
+
+
+@dataclass(frozen=True)
+class _KeySource:
+    """How one provider's key is found, verified and reported."""
+
+    label: str
+    env_names: tuple[str, ...]
+    filename: str
+    explicit_env: str
+    base_url_env: str
+    default_base_url: str
+
+
+_OPENROUTER = _KeySource(
+    label="OpenRouter",
+    env_names=(OPENROUTER_KEY_ENV,),
+    filename="openrouter.key",
+    explicit_env="OPENROUTER_API_KEY_FILE",
+    base_url_env="OPENROUTER_BASE_URL",
+    default_base_url=OPENROUTER_DEFAULT_BASE_URL,
+)
+
+_GEMINI = _KeySource(
+    label="Gemini",
+    env_names=(GEMINI_KEY_ENV, "GOOGLE_API_KEY"),
+    filename="gemini.key",
+    explicit_env="GEMINI_API_KEY_FILE",
+    base_url_env="GEMINI_BASE_URL",
+    default_base_url=GEMINI_DEFAULT_BASE_URL,
+)
+
+# Where each provider's key came from, for status output. Never the key itself.
+_key_sources: dict[str, str] = {}
+
+
+def _api_base(spec: _KeySource) -> str:
+    base = os.environ.get(spec.base_url_env) or spec.default_base_url
+    return base.rstrip("/")
 
 
 def openrouter_api_base() -> str:
     """API base for OpenRouter, overridable with ``$OPENROUTER_BASE_URL``."""
-    base = os.environ.get("OPENROUTER_BASE_URL") or OPENROUTER_DEFAULT_BASE_URL
-    return base.rstrip("/")
-
-# Where the OpenRouter key came from, for status output. Never holds the key.
-_openrouter_key_source = ""
+    return _api_base(_OPENROUTER)
 
 
-def _read_openrouter_key(path: Path) -> str:
-    """Return the key in ``path``, accepting a bare key or a KEY=value line."""
+def gemini_api_base() -> str:
+    """API base for Gemini, overridable with ``$GEMINI_BASE_URL``."""
+    return _api_base(_GEMINI)
+
+
+def _read_provider_key(path: Path, env_names: tuple[str, ...]) -> str:
+    """Return the key in ``path``, accepting a bare key or a NAME=value line."""
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -240,50 +282,102 @@ def _read_openrouter_key(path: Path) -> str:
             line = line[len("export ") :].strip()
         if "=" in line:
             name, _, value = line.partition("=")
-            if name.strip() != OPENROUTER_KEY_ENV:
+            if name.strip() not in env_names:
                 continue
             line = value.strip()
         return line.strip().strip("'\"")
     return ""
 
 
-def load_openrouter_key_file() -> str:
-    """Load the OpenRouter key from a file so it never has to be pasted in.
+def _load_provider_key(spec: _KeySource) -> str:
+    """Load ``spec``'s key from the environment or a file, without logging it.
 
-    ``$OPENROUTER_API_KEY_FILE`` wins, then ``<openjarvis home>/openrouter.key``,
-    then a key saved earlier in ``cloud-keys.env``. A key already present in the
-    environment is left alone. Returns where the key came from (``""`` when
-    nothing was found); the key itself is never returned or logged.
+    ``<explicit file>`` wins, then ``<openjarvis home>/<provider>.key``, then a
+    key saved earlier in ``cloud-keys.env``. A key already in the environment is
+    left alone. Returns where the key came from (``""`` when nothing was found).
     """
-    global _openrouter_key_source
-    if os.environ.get(OPENROUTER_KEY_ENV):
-        if not _openrouter_key_source:
-            _openrouter_key_source = "environment"
-        return _openrouter_key_source
+    for name in spec.env_names:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            os.environ.setdefault(spec.env_names[0], value)
+            _key_sources.setdefault(spec.label, "environment")
+            return _key_sources[spec.label]
 
     candidates: list[Path] = []
-    explicit = os.environ.get("OPENROUTER_API_KEY_FILE", "").strip()
+    explicit = os.environ.get(spec.explicit_env, "").strip()
     if explicit:
         candidates.append(Path(explicit).expanduser())
-    candidates.append(get_config_dir() / _OPENROUTER_KEY_FILENAME)
+    candidates.append(get_config_dir() / spec.filename)
     candidates.append(get_config_dir() / "cloud-keys.env")
 
     for path in candidates:
         if not path.is_file():
             continue
-        key = _read_openrouter_key(path)
+        key = _read_provider_key(path, spec.env_names)
         if not key:
             continue
-        os.environ[OPENROUTER_KEY_ENV] = key
-        _openrouter_key_source = f"file:{path}"
-        logger.info("Loaded OpenRouter key from %s", path)
-        return _openrouter_key_source
+        os.environ[spec.env_names[0]] = key
+        _key_sources[spec.label] = f"file:{path}"
+        logger.info("Loaded %s key from %s", spec.label, path)
+        return _key_sources[spec.label]
     return ""
+
+
+def load_openrouter_key_file() -> str:
+    """Load the OpenRouter key so it never has to be pasted into an app."""
+    return _load_provider_key(_OPENROUTER)
+
+
+def load_gemini_key_file() -> str:
+    """Load the Gemini key so it never has to be pasted into an app."""
+    return _load_provider_key(_GEMINI)
+
+
+def load_provider_key_files() -> dict[str, str]:
+    """Load every supported provider key file; returns label -> source."""
+    return {
+        spec.label: _load_provider_key(spec) for spec in (_OPENROUTER, _GEMINI)
+    }
 
 
 def openrouter_key_source() -> str:
     """Return ``""``, ``"environment"`` or ``"file:<path>"`` (never the key)."""
-    return _openrouter_key_source
+    return _key_sources.get(_OPENROUTER.label, "")
+
+
+def gemini_key_source() -> str:
+    """Return ``""``, ``"environment"`` or ``"file:<path>"`` (never the key)."""
+    return _key_sources.get(_GEMINI.label, "")
+
+
+def _verify_key(spec: _KeySource, key: str | None) -> tuple[bool, str]:
+    value = (key or "").strip()
+    if not value:
+        for name in spec.env_names:
+            value = (os.environ.get(name) or "").strip()
+            if value:
+                break
+    if not value:
+        return False, "no key"
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - httpx ships with the server extra
+        return False, "httpx is not installed"
+
+    url = f"{_api_base(spec)}/key"
+    headers = {"Authorization": f"Bearer {value}"}
+    if spec is _GEMINI:
+        url = f"{_api_base(spec)}/v1beta/models"
+        headers = {"x-goog-api-key": value}
+    try:
+        resp = httpx.get(url, headers=headers, timeout=15.0)
+    except Exception as exc:  # noqa: BLE001 - offline or DNS failure
+        return False, f"could not reach {spec.label} ({exc.__class__.__name__})"
+    if resp.status_code in (401, 403):
+        return False, f"rejected by {spec.label}"
+    if resp.status_code >= 400:
+        return False, f"HTTP {resp.status_code}"
+    return True, "ok"
 
 
 def verify_openrouter_key(key: str | None = None) -> tuple[bool, str]:
@@ -292,26 +386,12 @@ def verify_openrouter_key(key: str | None = None) -> tuple[bool, str]:
     OpenRouter's public model catalogue answers without authentication, so this
     calls an endpoint that requires a real key.
     """
-    value = (key or os.environ.get(OPENROUTER_KEY_ENV, "")).strip()
-    if not value:
-        return False, "no key"
-    try:
-        import httpx
-    except ImportError:  # pragma: no cover - httpx ships with the server extra
-        return False, "httpx is not installed"
-    try:
-        resp = httpx.get(
-            f"{openrouter_api_base()}/key",
-            headers={"Authorization": f"Bearer {value}"},
-            timeout=15.0,
-        )
-    except Exception as exc:  # noqa: BLE001 - offline or DNS failure
-        return False, f"could not reach OpenRouter ({exc.__class__.__name__})"
-    if resp.status_code in (401, 403):
-        return False, "rejected by OpenRouter"
-    if resp.status_code >= 400:
-        return False, f"HTTP {resp.status_code}"
-    return True, "ok"
+    return _verify_key(_OPENROUTER, key)
+
+
+def verify_gemini_key(key: str | None = None) -> tuple[bool, str]:
+    """Check a key against the Gemini API. Returns ``(ok, reason)``."""
+    return _verify_key(_GEMINI, key)
 
 
 def get_tool_credential(
