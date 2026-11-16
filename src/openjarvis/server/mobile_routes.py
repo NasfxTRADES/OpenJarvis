@@ -141,6 +141,8 @@ class UnconfiguredEngine(InferenceEngine):
 
     engine_id = "unconfigured"
     is_cloud = False
+    # Chat routes use this to fail loudly instead of streaming an empty reply.
+    is_placeholder = True
 
     def generate(
         self,

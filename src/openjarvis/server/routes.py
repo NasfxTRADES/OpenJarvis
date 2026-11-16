@@ -161,6 +161,17 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
     engine = request.app.state.engine
     agent = getattr(request.app.state, "agent", None)
     model = request_body.model
+    # Without a provider the placeholder engine answers with nothing, which
+    # looks like a broken app. Say what to do instead of streaming silence.
+    if getattr(engine, "is_placeholder", False) or not model:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No AI model is connected yet. Open Settings and connect a "
+                "free provider: Gemini, OpenRouter's free models, or Ollama "
+                "running on this computer."
+            ),
+        )
     use_server_agent = (
         agent is not None
         and not request_body.tools
