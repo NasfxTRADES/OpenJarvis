@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from openjarvis.core.credentials import (
     load_openrouter_key_file,
+    openrouter_api_base,
     openrouter_key_source,
 )
 from openjarvis.core.paths import get_config_dir
@@ -71,8 +72,6 @@ _NEED_SETUP_MESSAGE = (
     "a free provider (OpenRouter free models or Ollama running on this "
     "computer), then try again."
 )
-
-_OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
 
 def _mobile_dir() -> Path:
@@ -491,14 +490,13 @@ class MobileRuntime:
         import httpx
 
         headers = {"Authorization": f"Bearer {api_key}"}
+        base = openrouter_api_base()
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 # The public model catalogue answers without authentication, so
                 # it cannot prove a key works. This endpoint requires a real
                 # key: 401 here means the key is invalid, disabled, or revoked.
-                auth_resp = await client.get(
-                    "https://openrouter.ai/api/v1/key", headers=headers
-                )
+                auth_resp = await client.get(f"{base}/key", headers=headers)
                 if auth_resp.status_code in (401, 403):
                     raise HTTPException(
                         status_code=400,
@@ -515,7 +513,7 @@ class MobileRuntime:
                             f"(HTTP {auth_resp.status_code})."
                         ),
                     )
-                resp = await client.get(_OPENROUTER_MODELS_URL, headers=headers)
+                resp = await client.get(f"{base}/models", headers=headers)
         except httpx.HTTPError as exc:
             raise HTTPException(
                 status_code=502,

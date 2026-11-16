@@ -460,7 +460,9 @@ class CloudEngine(InferenceEngine):
                 import openai
 
                 self._openrouter_client = openai.OpenAI(
-                    base_url="https://openrouter.ai/api/v1",
+                    base_url=os.environ.get(
+                        "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+                    ),
                     api_key=openrouter_key,
                 )
             except ImportError:

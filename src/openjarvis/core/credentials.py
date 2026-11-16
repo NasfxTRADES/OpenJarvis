@@ -213,7 +213,14 @@ def inject_credentials(path: Path | None = None) -> None:
 
 
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
+OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 _OPENROUTER_KEY_FILENAME = "openrouter.key"
+
+
+def openrouter_api_base() -> str:
+    """API base for OpenRouter, overridable with ``$OPENROUTER_BASE_URL``."""
+    base = os.environ.get("OPENROUTER_BASE_URL") or OPENROUTER_DEFAULT_BASE_URL
+    return base.rstrip("/")
 
 # Where the OpenRouter key came from, for status output. Never holds the key.
 _openrouter_key_source = ""
@@ -294,7 +301,7 @@ def verify_openrouter_key(key: str | None = None) -> tuple[bool, str]:
         return False, "httpx is not installed"
     try:
         resp = httpx.get(
-            "https://openrouter.ai/api/v1/key",
+            f"{openrouter_api_base()}/key",
             headers={"Authorization": f"Bearer {value}"},
             timeout=15.0,
         )
