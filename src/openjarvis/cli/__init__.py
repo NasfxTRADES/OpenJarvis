@@ -119,6 +119,7 @@ if not _DATA_BOUNDARY_BOOTSTRAP:
     from openjarvis.cli.init_cmd import init
     from openjarvis.cli.memory_cmd import memory
     from openjarvis.cli.mine_cmd import mine
+    from openjarvis.cli.mobile_cmd import mobile
     from openjarvis.cli.model import model
     from openjarvis.cli.operators_cmd import operators
     from openjarvis.cli.optimize_cmd import optimize_group
@@ -138,6 +139,7 @@ if not _DATA_BOUNDARY_BOOTSTRAP:
     cli.add_command(ask, "ask")
     cli.add_command(chat, "chat")
     cli.add_command(serve, "serve")
+    cli.add_command(mobile, "mobile")
     cli.add_command(model, "model")
     cli.add_command(memory, "memory")
     cli.add_command(mine, "mine")

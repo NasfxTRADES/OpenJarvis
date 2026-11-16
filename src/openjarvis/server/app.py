@@ -24,6 +24,8 @@ from openjarvis.server.comparison import comparison_router
 from openjarvis.server.connectors_router import create_connectors_router
 from openjarvis.server.dashboard import dashboard_router
 from openjarvis.server.digest_routes import create_digest_router
+from openjarvis.server.mobile_routes import install_mobile_runtime
+from openjarvis.server.mobile_routes import router as mobile_router
 from openjarvis.server.research_router import router as research_router
 from openjarvis.server.routes import router
 from openjarvis.server.upload_router import router as upload_router
@@ -484,6 +486,12 @@ def create_app(
     app.include_router(analytics_router)
     include_all_routes(app)
 
+    # Phone app runtime: owns its scheduler and can connect a free model
+    # provider after startup, so the installable /m web app works on a fresh
+    # server without any desktop setup.
+    install_mobile_runtime(app, config=config, api_key=api_key)
+    app.include_router(mobile_router)
+
     # Restore SendBlue channel bindings from database on startup
     _restore_sendblue_bindings(app)
 
@@ -535,6 +543,15 @@ def create_app(
             app.include_router(webhook_router)
         except Exception as exc:
             logger.debug("Webhook routes init skipped: %s", exc)
+
+    # Serve the installable phone app at /m (built from mobile/).
+    mobile_dir = pathlib.Path(__file__).parent / "static_mobile"
+    if mobile_dir.is_dir():
+        app.mount(
+            "/m",
+            _NoCacheStaticFiles(directory=mobile_dir, html=True),
+            name="mobile-app",
+        )
 
     # Serve static frontend assets if the static/ directory exists
     static_dir = pathlib.Path(__file__).parent / "static"

@@ -15,7 +15,10 @@ services:
     # Pin a cloud model as well as the engine. The repository's default model
     # is local-only, so omitting this would make `jarvis serve` reject the
     # otherwise healthy cloud engine during startup.
-    dockerCommand: serve --host 0.0.0.0 --port 10000 --engine cloud --model gpt-4o-mini
+    # Free stack: the phone app is served at /m and the model is an OpenRouter
+    # free-tier ID, so no paid API is required. Connect the model from the
+    # app's Settings tab or set OPENROUTER_API_KEY below.
+    dockerCommand: serve --host 0.0.0.0 --port 10000 --engine cloud --model openrouter/openrouter/free
     healthCheckPath: /health
     autoDeploy: true
     envVars:
@@ -37,7 +40,7 @@ services:
       # are operator-supplied secrets; using one provider here keeps the
       # one-click contract deterministic instead of incorrectly requiring a
       # key for every supported cloud provider.
-      - key: OPENAI_API_KEY
+      - key: OPENROUTER_API_KEY
         sync: false
 
       # The free service filesystem is ephemeral. OpenJarvis state under this

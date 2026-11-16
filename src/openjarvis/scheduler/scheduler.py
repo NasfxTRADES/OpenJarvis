@@ -186,6 +186,36 @@ class TaskScheduler:
             d["next_run"] = None
             self._store.update_task(d)
 
+    def delete_task(self, task_id: str) -> None:
+        """Remove a task and its run history from the store."""
+        with self._lock:
+            if self._store.get_task(task_id) is None:
+                raise KeyError(f"Task not found: {task_id}")
+            self._store.delete_task(task_id)
+
+    def get_run_logs(self, task_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Return the most recent run logs for *task_id*."""
+        with self._lock:
+            if self._store.get_task(task_id) is None:
+                raise KeyError(f"Task not found: {task_id}")
+            return self._store.get_run_logs(task_id, limit=limit)
+
+    def run_task_now(self, task_id: str) -> Dict[str, Any]:
+        """Execute a task immediately, outside its schedule.
+
+        Returns the run log for this execution. Recurring tasks recompute
+        ``next_run`` as part of the run, so a manual execution never leaves a
+        task without a future schedule.
+        """
+        with self._lock:
+            d = self._store.get_task(task_id)
+        if d is None:
+            raise KeyError(f"Task not found: {task_id}")
+        self._execute_task(ScheduledTask.from_dict(d))
+        with self._lock:
+            logs = self._store.get_run_logs(task_id, limit=1)
+        return logs[0] if logs else {}
+
     # -- Background loop -----------------------------------------------------
 
     def _poll_loop(self) -> None:

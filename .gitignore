@@ -131,3 +131,7 @@ learning.db
 minion_logs/
 *.oj-debug.json
 oj-debug.*.json
+
+# Installable phone app. The built assets are committed so `jarvis mobile`
+# works without a Node toolchain; only dependencies are ignored.
+mobile/node_modules/

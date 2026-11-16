@@ -29,9 +29,24 @@ class DaemonServer(uvicorn.Server):
             raise
 
 
-def run_server(app: Any, *, host: str, port: int, log_level: str = "info") -> None:
+def run_server(
+    app: Any,
+    *,
+    host: str,
+    port: int,
+    log_level: str = "info",
+    ssl_certfile: str | None = None,
+    ssl_keyfile: str | None = None,
+) -> None:
     server = DaemonServer(
-        uvicorn.Config(app, host=host, port=port, log_level=log_level)
+        uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_level=log_level,
+            ssl_certfile=ssl_certfile,
+            ssl_keyfile=ssl_keyfile,
+        )
     )
     try:
         server.run()
