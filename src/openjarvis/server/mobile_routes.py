@@ -479,25 +479,37 @@ class MobileRuntime:
     async def _openrouter_free_models(self, api_key: str) -> list[str]:
         import httpx
 
+        headers = {"Authorization": f"Bearer {api_key}"}
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                resp = await client.get(
-                    _OPENROUTER_MODELS_URL,
-                    headers={"Authorization": f"Bearer {api_key}"},
+                # The public model catalogue answers without authentication, so
+                # it cannot prove a key works. This endpoint requires a real
+                # key: 401 here means the key is invalid, disabled, or revoked.
+                auth_resp = await client.get(
+                    "https://openrouter.ai/api/v1/key", headers=headers
                 )
+                if auth_resp.status_code in (401, 403):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "OpenRouter rejected that API key. Copy it again "
+                            "from openrouter.ai/keys."
+                        ),
+                    )
+                if auth_resp.status_code >= 400:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            "Could not verify the key with OpenRouter "
+                            f"(HTTP {auth_resp.status_code})."
+                        ),
+                    )
+                resp = await client.get(_OPENROUTER_MODELS_URL, headers=headers)
         except httpx.HTTPError as exc:
             raise HTTPException(
                 status_code=502,
                 detail=f"Could not reach OpenRouter: {exc}",
             ) from exc
-        if resp.status_code in (401, 403):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "OpenRouter rejected that API key. Copy it again from "
-                    "openrouter.ai/keys."
-                ),
-            )
         if resp.status_code >= 400:
             raise HTTPException(
                 status_code=502,
@@ -514,9 +526,9 @@ class MobileRuntime:
                 except (TypeError, ValueError):
                     return False
 
-            if not (
-                _is_zero(pricing.get("prompt")) and _is_zero(pricing.get("completion"))
-            ):
+            prompt_price = pricing.get("prompt")
+            completion_price = pricing.get("completion")
+            if not (_is_zero(prompt_price) and _is_zero(completion_price)):
                 continue
             # Chat only: skip models that emit audio/images (e.g. music models)
             # and anything that cannot take text input.
@@ -524,6 +536,8 @@ class MobileRuntime:
             outputs = architecture.get("output_modalities") or ["text"]
             inputs = architecture.get("input_modalities") or ["text"]
             if "text" not in outputs or "text" not in inputs:
+                continue
+            if "audio" in outputs or "image" in outputs:
                 continue
             model_id = str(entry.get("id", ""))
             if not model_id:
