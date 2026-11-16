@@ -389,9 +389,117 @@ def verify_openrouter_key(key: str | None = None) -> tuple[bool, str]:
     return _verify_key(_OPENROUTER, key)
 
 
+# Cheap models to try first when proving a Gemini key can actually answer.
+GEMINI_PROBE_MODELS: tuple[str, ...] = (
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
+
+
+def _gemini_key_value(key: str | None) -> str:
+    value = (key or "").strip()
+    if not value:
+        for name in _GEMINI.env_names:
+            value = (os.environ.get(name) or "").strip()
+            if value:
+                break
+    return value
+
+
+def probe_gemini_generation(
+    key: str | None = None, model: str = ""
+) -> tuple[bool, str]:
+    """Ask Gemini for a single token, which is the only real proof of access.
+
+    Listing models is not enough: new ``AQ.`` authorization keys can list
+    models and still be refused for generation with
+    ``ACCESS_TOKEN_TYPE_UNSUPPORTED``. ``model`` may be a bare name or an
+    ``google/``-prefixed one. Returns ``(ok, reason)``.
+    """
+    value = _gemini_key_value(key)
+    if not value:
+        return False, "no key"
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - httpx ships with the server extra
+        return False, "httpx is not installed"
+
+    name = (model or "").strip().removeprefix("google/") or GEMINI_PROBE_MODELS[0]
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": "ping"}]}],
+        "generationConfig": {"maxOutputTokens": 1},
+    }
+    try:
+        resp = httpx.post(
+            f"{gemini_api_base()}/v1beta/models/{name}:generateContent",
+            headers={"x-goog-api-key": value},
+            json=payload,
+            timeout=30.0,
+        )
+    except Exception as exc:  # noqa: BLE001 - offline or DNS failure
+        return False, f"could not reach Gemini ({exc.__class__.__name__})"
+
+    if resp.status_code < 400:
+        return True, "ok"
+    body = resp.text or ""
+    if "ACCESS_TOKEN_TYPE_UNSUPPORTED" in body:
+        return False, (
+            "Google refuses generation for this AQ authorization key "
+            "(ACCESS_TOKEN_TYPE_UNSUPPORTED) even though it can list models"
+        )
+    if resp.status_code == 429:
+        return False, "Gemini rate limit or quota exhausted"
+    if resp.status_code in (401, 403):
+        return False, "rejected by Gemini"
+    if resp.status_code == 404:
+        return False, f"model {name} is not available to this key"
+    return False, f"HTTP {resp.status_code}"
+
+
 def verify_gemini_key(key: str | None = None) -> tuple[bool, str]:
-    """Check a key against the Gemini API. Returns ``(ok, reason)``."""
-    return _verify_key(_GEMINI, key)
+    """Check a Gemini key end to end. Returns ``(ok, reason)``.
+
+    Lists models to find one the key can reach, then asks that model for a
+    single token so ``ok`` means messages will actually work.
+    """
+    value = _gemini_key_value(key)
+    if not value:
+        return False, "no key"
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - httpx ships with the server extra
+        return False, "httpx is not installed"
+    try:
+        resp = httpx.get(
+            f"{gemini_api_base()}/v1beta/models",
+            headers={"x-goog-api-key": value},
+            timeout=15.0,
+        )
+    except Exception as exc:  # noqa: BLE001 - offline or DNS failure
+        return False, f"could not reach Gemini ({exc.__class__.__name__})"
+    if resp.status_code in (401, 403):
+        return False, "rejected by Gemini"
+    if resp.status_code >= 400:
+        return False, f"HTTP {resp.status_code}"
+
+    names: list[str] = []
+    for entry in (resp.json() or {}).get("models", []):
+        name = str(entry.get("name", "")).removeprefix("models/")
+        methods = entry.get("supportedGenerationMethods") or []
+        if not name or "gemini" not in name:
+            continue
+        if methods and "generateContent" not in methods:
+            continue
+        if any(bad in name for bad in ("embedding", "image", "tts", "audio")):
+            continue
+        names.append(name)
+    if not names:
+        return False, "this key reaches no Gemini chat models"
+
+    probe = next((m for m in GEMINI_PROBE_MODELS if m in names), names[0])
+    return probe_gemini_generation(value, probe)
 
 
 def get_tool_credential(

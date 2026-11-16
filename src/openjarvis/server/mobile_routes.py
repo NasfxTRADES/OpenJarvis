@@ -32,6 +32,7 @@ from openjarvis.core.credentials import (
     load_provider_key_files,
     openrouter_api_base,
     openrouter_key_source,
+    probe_gemini_generation,
 )
 from openjarvis.core.paths import get_config_dir
 from openjarvis.core.types import Message
@@ -469,6 +470,17 @@ class MobileRuntime:
                 chosen = next(iter(models), GEMINI_MODEL_PREFERENCE[0])
         if chosen not in models:
             models = [chosen, *models]
+
+        # A key that lists models can still be refused for generation (the
+        # known AQ authorization-key case), so prove it can answer first.
+        import asyncio
+
+        ok, reason = await asyncio.to_thread(probe_gemini_generation, key, chosen)
+        if not ok:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Gemini cannot answer with this key: {reason}.",
+            )
 
         _persist_cloud_key("GEMINI_API_KEY", key)
         os.environ["GEMINI_API_KEY"] = key
