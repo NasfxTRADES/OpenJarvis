@@ -116,20 +116,38 @@ export function SettingsView({
           picks from the models OpenRouter currently serves at zero cost. No card
           required.
         </p>
-        <form onSubmit={submitKey} className="stack">
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(event) => setApiKey(event.target.value)}
-            placeholder="sk-or-v1-…"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-          <button type="submit" className="btn btn-primary" disabled={busy !== null || !apiKey.trim()}>
-            {busy === 'openrouter' ? 'Connecting…' : 'Connect free model'}
-          </button>
-        </form>
+        {status?.key_source ? (
+          <div className="stack">
+            <p className="muted small">
+              This server already has a key from{' '}
+              <code>{status.key_source.replace(/^file:/, '') || 'the environment'}</code>.
+              Nothing to paste — connect and Jarvis picks a free model.
+            </p>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy !== null}
+              onClick={() => void run('openrouter', { provider: 'openrouter' })}
+            >
+              {busy === 'openrouter' ? 'Connecting…' : 'Use the server key'}
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={submitKey} className="stack">
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              placeholder="sk-or-v1-…"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+            <button type="submit" className="btn btn-primary" disabled={busy !== null || !apiKey.trim()}>
+              {busy === 'openrouter' ? 'Connecting…' : 'Connect free model'}
+            </button>
+          </form>
+        )}
       </section>
 
       <section className="setting-card">

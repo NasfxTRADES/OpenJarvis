@@ -214,6 +214,10 @@ def mobile(
         )
         raise SystemExit(1)
 
+    from openjarvis.core.credentials import (
+        load_openrouter_key_file,
+        verify_openrouter_key,
+    )
     from openjarvis.server.mobile_routes import (
         UnconfiguredEngine,
         _save_settings,
@@ -223,6 +227,18 @@ def mobile(
 
     if openrouter_key:
         os.environ["OPENROUTER_API_KEY"] = openrouter_key.strip()
+
+    # A key file lets the phone connect without anybody pasting a secret.
+    key_source = load_openrouter_key_file()
+    key_note = ""
+    if key_source.startswith("file:"):
+        valid, reason = verify_openrouter_key()
+        key_note = "verified" if valid else reason
+        if not valid:
+            # A rejected key is worse than none: the phone would show a live
+            # assistant whose every message fails. Start unconfigured instead
+            # and let Settings report the problem.
+            os.environ.pop("OPENROUTER_API_KEY", None)
 
     settings = load_settings()
     key = (access_key or os.environ.get("OPENJARVIS_API_KEY") or "").strip()
@@ -294,10 +310,17 @@ def mobile(
 
     lan_url = f"{scheme}://{lan_ip}:{port}/m"
     model_label = model or "not connected yet (use the app Settings tab)"
+    key_line = ""
+    if key_source.startswith("file:"):
+        path = key_source[len("file:") :]
+        key_line = f"  Key:        [cyan]{path}[/cyan] ({key_note})\n"
+    elif key_source == "environment":
+        key_line = "  Key:        [cyan]from the environment[/cyan]\n"
     console.print(
         "[green]OpenJarvis mobile is ready[/green]\n"
         f"  Phone URL:  [cyan bold]{lan_url}[/cyan bold]\n"
         f"  Access key: [cyan]{key}[/cyan]\n"
+        f"{key_line}"
         f"  Model:      [cyan]{model_label}[/cyan]\n\n"
         "On your iPhone: open the URL in Safari, tap Share, then "
         "'Add to Home Screen'.\n"

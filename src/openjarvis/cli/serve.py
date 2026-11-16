@@ -163,6 +163,12 @@ def serve(
     # so availability checks and tool instances see the same environment.
     inject_credentials()
 
+    # A key file (~/.openjarvis/openrouter.key or $OPENROUTER_API_KEY_FILE)
+    # makes the OpenRouter engine available without exporting a secret.
+    from openjarvis.core.credentials import load_openrouter_key_file
+
+    load_openrouter_key_file()
+
     config = load_config()
 
     # Resolve host/port from CLI args or config

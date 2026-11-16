@@ -24,6 +24,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from openjarvis.core.credentials import (
+    load_openrouter_key_file,
+    openrouter_key_source,
+)
 from openjarvis.core.paths import get_config_dir
 from openjarvis.core.types import Message
 from openjarvis.engine._stubs import InferenceEngine
@@ -234,6 +238,8 @@ class MobileRuntime:
         self._scheduler: Any = None
         self._lock = threading.Lock()
         self._jobs: dict[str, float] = {}
+        # A key file on the server means the phone never has to paste one.
+        load_openrouter_key_file()
 
     # -- Lifecycle -----------------------------------------------------------
 
@@ -321,6 +327,7 @@ class MobileRuntime:
             "voice": self.voice_status(),
             "tasks": len(self.list_tasks()),
             "free_models": list(FALLBACK_FREE_MODELS),
+            "key_source": openrouter_key_source(),
             "scheduler": self._scheduler is not None,
             "server_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
@@ -370,6 +377,10 @@ class MobileRuntime:
     async def _configure_openrouter(
         self, *, api_key: str, model: str
     ) -> dict[str, Any]:
+        # No key typed in? Fall back to one the server loaded from a file, so a
+        # phone can connect without anybody pasting a secret.
+        if not (api_key or "").strip():
+            load_openrouter_key_file()
         key = (api_key or os.environ.get("OPENROUTER_API_KEY", "")).strip()
         if not key:
             raise HTTPException(

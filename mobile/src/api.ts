@@ -24,6 +24,7 @@ export interface MobileStatus {
   models: string[];
   tasks: number;
   free_models: string[];
+  key_source?: string;
   scheduler: boolean;
   voice?: VoiceStatus;
   server_time: string;

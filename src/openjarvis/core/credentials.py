@@ -212,6 +212,101 @@ def inject_credentials(path: Path | None = None) -> None:
                 os.environ[k] = v
 
 
+OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
+_OPENROUTER_KEY_FILENAME = "openrouter.key"
+
+# Where the OpenRouter key came from, for status output. Never holds the key.
+_openrouter_key_source = ""
+
+
+def _read_openrouter_key(path: Path) -> str:
+    """Return the key in ``path``, accepting a bare key or a KEY=value line."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" in line:
+            name, _, value = line.partition("=")
+            if name.strip() != OPENROUTER_KEY_ENV:
+                continue
+            line = value.strip()
+        return line.strip().strip("'\"")
+    return ""
+
+
+def load_openrouter_key_file() -> str:
+    """Load the OpenRouter key from a file so it never has to be pasted in.
+
+    ``$OPENROUTER_API_KEY_FILE`` wins, then ``<openjarvis home>/openrouter.key``,
+    then a key saved earlier in ``cloud-keys.env``. A key already present in the
+    environment is left alone. Returns where the key came from (``""`` when
+    nothing was found); the key itself is never returned or logged.
+    """
+    global _openrouter_key_source
+    if os.environ.get(OPENROUTER_KEY_ENV):
+        if not _openrouter_key_source:
+            _openrouter_key_source = "environment"
+        return _openrouter_key_source
+
+    candidates: list[Path] = []
+    explicit = os.environ.get("OPENROUTER_API_KEY_FILE", "").strip()
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    candidates.append(get_config_dir() / _OPENROUTER_KEY_FILENAME)
+    candidates.append(get_config_dir() / "cloud-keys.env")
+
+    for path in candidates:
+        if not path.is_file():
+            continue
+        key = _read_openrouter_key(path)
+        if not key:
+            continue
+        os.environ[OPENROUTER_KEY_ENV] = key
+        _openrouter_key_source = f"file:{path}"
+        logger.info("Loaded OpenRouter key from %s", path)
+        return _openrouter_key_source
+    return ""
+
+
+def openrouter_key_source() -> str:
+    """Return ``""``, ``"environment"`` or ``"file:<path>"`` (never the key)."""
+    return _openrouter_key_source
+
+
+def verify_openrouter_key(key: str | None = None) -> tuple[bool, str]:
+    """Check a key against OpenRouter. Returns ``(ok, reason)``.
+
+    OpenRouter's public model catalogue answers without authentication, so this
+    calls an endpoint that requires a real key.
+    """
+    value = (key or os.environ.get(OPENROUTER_KEY_ENV, "")).strip()
+    if not value:
+        return False, "no key"
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - httpx ships with the server extra
+        return False, "httpx is not installed"
+    try:
+        resp = httpx.get(
+            "https://openrouter.ai/api/v1/key",
+            headers={"Authorization": f"Bearer {value}"},
+            timeout=15.0,
+        )
+    except Exception as exc:  # noqa: BLE001 - offline or DNS failure
+        return False, f"could not reach OpenRouter ({exc.__class__.__name__})"
+    if resp.status_code in (401, 403):
+        return False, "rejected by OpenRouter"
+    if resp.status_code >= 400:
+        return False, f"HTTP {resp.status_code}"
+    return True, "ok"
+
+
 def get_tool_credential(
     tool_name: str,
     key: str,
