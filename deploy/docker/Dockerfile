@@ -18,15 +18,19 @@ RUN VITE_SUPABASE_ANON_KEY="${OPENJARVIS_LEADERBOARD_PUBLIC_ANON}" npm run build
 FROM python:3.12.13-slim-bookworm@sha256:76d4b7b6305788c6b4c6a19d6a22a3921bf802e9af4d5e1e5bd771208dba74bf AS builder
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential ca-certificates curl && \
+    apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl cmake perl && \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
+# The toolchain has to match rust/rust-toolchain.toml. Workspace dependencies
+# now require Rust 1.89 (uuid 1.27), and cargo aborts the build outright when
+# the default toolchain is older, so keep these two in sync.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
         sh -s -- -y --profile minimal --default-toolchain none && \
-    rustup toolchain install 1.88 --profile minimal && \
-    rustup default 1.88
+    rustup toolchain install 1.89 --profile minimal && \
+    rustup default 1.89
 
 WORKDIR /app
 
