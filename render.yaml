@@ -16,7 +16,13 @@ services:
     # (Gemini first, then OpenRouter, then Ollama) and serves the phone app at
     # /m. Render does not interpolate $PORT inside dockerCommand, so the port is
     # pinned here and in PORT below; change both together.
-    dockerCommand: mobile --port 10000
+    #
+    # Render's Docker Command replaces the image's ENTRYPOINT as well as its
+    # CMD: it runs the string as the container's whole process, so it has to
+    # name the `jarvis` binary. A bare `mobile --port 10000` sends Render looking
+    # for a program called `mobile`, which does not exist, and the deploy fails
+    # with the uninformative "Exited with status 128" and no application output.
+    dockerCommand: /usr/local/bin/jarvis mobile --host 0.0.0.0 --port 10000
     healthCheckPath: /health
     autoDeploy: true
     envVars:

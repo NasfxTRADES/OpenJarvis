@@ -35,6 +35,12 @@ The Blueprint pins both the `PORT` environment variable and the server's
 `--port` argument to `10000`. Render's Docker command does not expand `$PORT`,
 so if you customize the service port, update both values in `render.yaml`.
 
+Render's **Docker Command** replaces both the image's `CMD` *and* its
+`ENTRYPOINT`, so the Blueprint spells out the executable:
+`/usr/local/bin/jarvis mobile --host 0.0.0.0 --port 10000`. If you shorten it to
+`mobile --port 10000`, Render tries to run a program named `mobile`, and the
+deploy ends with the uninformative `Exited with status 128` and no app logs.
+
 ## What the free instance does and does not keep
 
 !!! warning "Free instances do not preserve OpenJarvis data"
