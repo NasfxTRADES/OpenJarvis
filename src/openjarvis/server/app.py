@@ -9,7 +9,7 @@ import threading
 import time
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from openjarvis.server.analytics_routes import (
@@ -547,6 +547,14 @@ def create_app(
     # Serve the installable phone app at /m (built from mobile/).
     mobile_dir = pathlib.Path(__file__).parent / "static_mobile"
     if mobile_dir.is_dir():
+        # Mount() only matches paths that continue with "/", so a bare "/m"
+        # would fall through to the desktop SPA catch-all below, which renders a
+        # blank page because its /v1 calls are unauthenticated. Send the bare
+        # prefix to the phone app's own URL instead.
+        @app.get("/m", include_in_schema=False)
+        async def mobile_app_root() -> RedirectResponse:
+            return RedirectResponse(url="/m/", status_code=307)
+
         app.mount(
             "/m",
             _NoCacheStaticFiles(directory=mobile_dir, html=True),
