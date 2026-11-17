@@ -53,22 +53,25 @@ services:
       # Paid per token — only used once every free provider is spent:
       #   OPENAI_API_KEY      platform.openai.com/api-keys (ChatGPT)
       #   ANTHROPIC_API_KEY   console.anthropic.com (Claude)
+      # `sync: false` keeps these out of Blueprint syncs: the value comes from
+      # the dashboard and is never overwritten. Spelling out `value: ""` here
+      # instead would wipe whatever key you pasted on every blueprint sync.
       - key: GROQ_API_KEY
-        value: ""
+        sync: false
       - key: CEREBRAS_API_KEY
-        value: ""
+        sync: false
       - key: GEMINI_API_KEY
-        value: ""
+        sync: false
       - key: MISTRAL_API_KEY
-        value: ""
+        sync: false
       - key: OPENROUTER_API_KEY
-        value: ""
+        sync: false
       - key: XAI_API_KEY
-        value: ""
+        sync: false
       - key: OPENAI_API_KEY
-        value: ""
+        sync: false
       - key: ANTHROPIC_API_KEY
-        value: ""
+        sync: false
       - key: OPENJARVIS_FREE_CHAIN
         value: "groq,cerebras,gemini,mistral,openrouter,grok,openai,claude"
 
