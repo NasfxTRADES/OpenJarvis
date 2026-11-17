@@ -187,8 +187,9 @@ function PairScreen({
         </div>
         <h1>Pair this phone</h1>
         <p>
-          Type the access key printed by <code>jarvis mobile</code> on your
-          computer. It is remembered on this device.
+          Paste the access key your server runs with — <code>OPENJARVIS_API_KEY</code>{' '}
+          from your host's environment, or the key printed by <code>jarvis mobile</code>{' '}
+          on your computer. It is remembered on this device.
         </p>
         <form onSubmit={submit}>
           <input

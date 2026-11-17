@@ -38,7 +38,16 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
-        navigateFallbackDenylist: [/^\/v1\//, /^\/health/, /^\/dashboard/, /^\/api\//],
+        // /m is the installable phone app, served by the server from its own
+        // built assets. Without this the desktop shell's fallback answers /m
+        // from the service worker cache and the phone shows a blank page.
+        navigateFallbackDenylist: [
+          /^\/v1\//,
+          /^\/health/,
+          /^\/dashboard/,
+          /^\/api\//,
+          /^\/m(\/|$)/,
+        ],
       },
     }),
   ],
