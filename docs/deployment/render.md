@@ -7,16 +7,25 @@ HTTPS while your computer is off.
 
 ## Create the service
 
-1. Open Render's **New Blueprint Instance** flow and select your OpenJarvis
-   fork, on the branch that contains the phone app.
-2. Provide `GEMINI_API_KEY` when Render asks for the Blueprint secret — a free
-   key from <https://aistudio.google.com/apikey> is enough.
-3. Apply the Blueprint and wait for `/health` to become healthy. The first build
+1. In the Render Dashboard click **+ New → Blueprint**. Render opens a list of
+   your repositories: press **Connect** next to your OpenJarvis fork.
+   If the fork is not in that list, the Render GitHub App cannot see it — grant
+   access at <https://github.com/apps/render/installations/new>. Repositories
+   are not found by searching the dashboard; only by connecting them here.
+2. On the form that follows, set **Branch** to the branch that contains the
+   phone app (`main` once this work is merged, otherwise the feature branch),
+   leave **Blueprint Path** as `render.yaml`, and press **Deploy Blueprint**.
+
+   The branch field matters: the Dashboard reads `render.yaml` from the default
+   branch unless you change it, and the default branch may still describe the
+   desktop server that asks for an OpenAI key.
+3. No secret is required at creation — both provider keys are optional. Wait
+   for the build to finish and `/health` to report healthy; the first build
    compiles the Rust core and takes several minutes.
-4. Copy the generated `OPENJARVIS_API_KEY` from the dashboard and open
-   `https://<service-name>.onrender.com/m` on the phone, then paste that key
-   once; the phone remembers it. Use Safari's **Share → Add to Home Screen** to
-   install it.
+4. Copy the generated `OPENJARVIS_API_KEY` from the service's **Environment**
+   tab and open `https://<service-name>.onrender.com/m` on the phone, then
+   paste that key once; the phone remembers it. Use Safari's
+   **Share → Add to Home Screen** to install it.
 
 Alternatively set `OPENROUTER_API_KEY` in the dashboard instead of
 `GEMINI_API_KEY` to use OpenRouter's free models; `jarvis mobile` picks
