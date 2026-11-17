@@ -1398,12 +1398,23 @@ async def server_info(request: Request):
 
 @router.get("/health")
 async def health(request: Request):
-    """Health check endpoint."""
+    """Liveness probe: the server is up and serving.
+
+    Provider readiness is reported in the body instead of as a 5xx. A server
+    that is simply waiting for the user to connect a model is healthy, and
+    hosting platforms should not restart it (or fail the deploy) for that.
+    """
     engine = request.app.state.engine
-    healthy = engine.health()
-    if not healthy:
-        raise HTTPException(status_code=503, detail="Engine unhealthy")
-    return {"status": "ok"}
+    try:
+        engine_ok = bool(engine.health())
+    except Exception:  # noqa: BLE001 - a probe must never raise
+        engine_ok = False
+    return {
+        "status": "ok",
+        "engine": getattr(engine, "engine_id", ""),
+        "model_ready": engine_ok
+        and not getattr(engine, "is_placeholder", False),
+    }
 
 
 # ---------------------------------------------------------------------------

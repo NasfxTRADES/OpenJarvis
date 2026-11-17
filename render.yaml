@@ -28,14 +28,13 @@ services:
       - key: OPENJARVIS_API_KEY
         generateValue: true
 
-      # Free Gemini key from https://aistudio.google.com/apikey. Required at
-      # Blueprint creation because Render treats every `sync: false` value as an
-      # input; this keeps the one-click contract to a single provider.
+      # No provider key is required to deploy: the app starts, serves /m and
+      # asks you to connect a model. Add a free key afterwards in the service's
+      # Environment tab — GEMINI_API_KEY from https://aistudio.google.com/apikey,
+      # or OPENROUTER_API_KEY for OpenRouter's free models. Both are free and
+      # need no card; the service redeploys itself when you save one.
       - key: GEMINI_API_KEY
-        sync: false
-
-      # Optional alternative provider. Set it in the dashboard to switch to
-      # OpenRouter's free models; leave empty to use Gemini only.
+        value: ""
       - key: OPENROUTER_API_KEY
         value: ""
 
