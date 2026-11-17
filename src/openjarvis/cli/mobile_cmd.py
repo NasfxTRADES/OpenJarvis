@@ -50,6 +50,26 @@ def _resolve_engine(console: Console, model_override: str | None):
     saved_model = model_override or str(settings.get("model", "") or "")
     openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
 
+    # Automatic free-provider failover. When no single provider was chosen,
+    # chain every provider this machine has a key for — Groq, Cerebras, Gemini,
+    # Mistral, OpenRouter's free models, Grok, ChatGPT, Claude — so running out
+    # of allowance on one simply hands the next request to the next provider.
+    if provider in ("", "auto") and model_override is None:
+        try:
+            from openjarvis.engine.failover import build_free_failover_engine
+
+            chain = build_free_failover_engine()
+        except Exception as exc:  # pragma: no cover - optional extras
+            chain = None
+            console.print(f"[yellow]Provider failover unavailable: {exc}[/yellow]")
+        if chain is not None:
+            console.print(
+                "  Chain:  [cyan]"
+                + " → ".join(slot_label for slot_label in chain.providers())
+                + "[/cyan]"
+            )
+            return chain, chain.primary_model, "auto"
+
     if provider == "openrouter" or (not provider and openrouter_key):
         if openrouter_key:
             try:

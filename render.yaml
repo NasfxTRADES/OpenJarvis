@@ -35,14 +35,42 @@ services:
         generateValue: true
 
       # No provider key is required to deploy: the app starts, serves /m and
-      # asks you to connect a model. Add a free key afterwards in the service's
-      # Environment tab — GEMINI_API_KEY from https://aistudio.google.com/apikey,
-      # or OPENROUTER_API_KEY for OpenRouter's free models. Both are free and
-      # need no card; the service redeploys itself when you save one.
+      # asks you to connect a model. Fill in as many of these as you like in
+      # the service's Environment tab; the service redeploys itself when you
+      # save one. Jarvis then chains them in free-first order and switches to
+      # the next one automatically whenever a provider runs out of allowance
+      # (HTTP 429 / quota): Groq → Cerebras → Gemini → Mistral → OpenRouter
+      # free → Grok → ChatGPT → Claude. Reorder or restrict the chain with
+      # OPENJARVIS_FREE_CHAIN="groq,gemini,openrouter" below.
+      #
+      # Free, no card required:
+      #   GROQ_API_KEY        console.groq.com/keys
+      #   CEREBRAS_API_KEY    cloud.cerebras.ai
+      #   GEMINI_API_KEY      aistudio.google.com/apikey
+      #   MISTRAL_API_KEY     console.mistral.ai/api-keys
+      #   OPENROUTER_API_KEY  openrouter.ai/keys (zero-priced models)
+      #   XAI_API_KEY         console.x.ai (Grok; free credits on signup)
+      # Paid per token — only used once every free provider is spent:
+      #   OPENAI_API_KEY      platform.openai.com/api-keys (ChatGPT)
+      #   ANTHROPIC_API_KEY   console.anthropic.com (Claude)
+      - key: GROQ_API_KEY
+        value: ""
+      - key: CEREBRAS_API_KEY
+        value: ""
       - key: GEMINI_API_KEY
+        value: ""
+      - key: MISTRAL_API_KEY
         value: ""
       - key: OPENROUTER_API_KEY
         value: ""
+      - key: XAI_API_KEY
+        value: ""
+      - key: OPENAI_API_KEY
+        value: ""
+      - key: ANTHROPIC_API_KEY
+        value: ""
+      - key: OPENJARVIS_FREE_CHAIN
+        value: "groq,cerebras,gemini,mistral,openrouter,grok,openai,claude"
 
       # The free instance filesystem is ephemeral: scheduled tasks, the saved
       # model choice and transcripts are lost on every restart, spin-down or

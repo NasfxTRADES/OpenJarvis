@@ -119,6 +119,39 @@ _DEEPSEEK_MODELS = [
     "deepseek-v4-flash",
     "deepseek-v4-pro",
 ]
+# Groq Cloud (console.groq.com) — OpenAI-compatible and free to start. The free
+# plan caps usage per model, so serving several of them multiplies the
+# allowance; IDs are prefixed with "groq/" so they route here and not to the
+# OpenAI client. Prefixed, because Groq's own IDs look like "openai/gpt-oss-*"
+# and would otherwise be indistinguishable from OpenAI/aggregator models.
+_GROQ_MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b",
+]
+# xAI's Grok API — also OpenAI-compatible, free credits on signup. "grok/" and
+# "xai/" are accepted so the name people type works either way.
+_XAI_MODELS = [
+    "grok-4-fast",
+    "grok-4",
+    "grok-3-mini",
+]
+# Cerebras Inference — OpenAI-compatible with a generous free tier. Its own IDs
+# are unprefixed ("llama3.1-8b"), so "cerebras/" is what routes them here.
+_CEREBRAS_MODELS = [
+    "llama3.1-8b",
+    "gpt-oss-120b",
+    "qwen-3-235b-a22b-instruct-2507",
+]
+# Mistral's La Plateforme has a free experimentation tier. IDs currently offered
+# free change, so the catalogue is read from /v1/models at runtime and these are
+# only the starting point.
+_MISTRAL_MODELS = [
+    "mistral-small-latest",
+    "mistral-medium-latest",
+    "open-mistral-nemo",
+    "mistral-large-latest",
+]
 
 # OpenRouter models — prefixed with "openrouter/" so they can be identified
 _OPENROUTER_POPULAR = [
@@ -176,6 +209,22 @@ def _is_atlascloud_model(model: str) -> bool:
     return model.startswith("atlascloud/")
 
 
+def _is_groq_model(model: str) -> bool:
+    return model.startswith("groq/")
+
+
+def _is_xai_model(model: str) -> bool:
+    return model.startswith(("xai/", "grok/"))
+
+
+def _is_cerebras_model(model: str) -> bool:
+    return model.startswith("cerebras/")
+
+
+def _is_mistral_model(model: str) -> bool:
+    return model.startswith("mistral/")
+
+
 def _is_codex_model(model: str) -> bool:
     return model.startswith("codex/")
 
@@ -187,6 +236,8 @@ def _is_anthropic_model(model: str) -> bool:
         "claude" in model.lower()
         and not _is_openrouter_model(model)
         and not _is_atlascloud_model(model)
+        and not _is_groq_model(model)
+        and not _is_xai_model(model)
     )
 
 
@@ -195,6 +246,8 @@ def _is_google_model(model: str) -> bool:
         "gemini" in model.lower()
         and not _is_openrouter_model(model)
         and not _is_atlascloud_model(model)
+        and not _is_groq_model(model)
+        and not _is_xai_model(model)
     )
 
 
@@ -424,6 +477,10 @@ class CloudEngine(InferenceEngine):
         self._atlascloud_client: Any = None
         self._minimax_client: Any = None
         self._deepseek_client: Any = None
+        self._groq_client: Any = None
+        self._xai_client: Any = None
+        self._cerebras_client: Any = None
+        self._mistral_client: Any = None
         self._codex_client: Any = None
         # Gemini thought_signatures: tool_call_id -> signature bytes
         self._thought_sigs: Dict[str, bytes] = {}
@@ -492,6 +549,56 @@ class CloudEngine(InferenceEngine):
                 self._minimax_client = openai.OpenAI(
                     base_url="https://api.minimax.io/v1",
                     api_key=minimax_key,
+                )
+            except ImportError:
+                pass
+        groq_key = os.environ.get("GROQ_API_KEY")
+        if groq_key:
+            try:
+                import openai
+
+                self._groq_client = openai.OpenAI(
+                    base_url=os.environ.get(
+                        "GROQ_BASE_URL", "https://api.groq.com/openai/v1"
+                    ),
+                    api_key=groq_key,
+                )
+            except ImportError:
+                pass
+        xai_key = os.environ.get("XAI_API_KEY") or os.environ.get("GROK_API_KEY")
+        if xai_key:
+            try:
+                import openai
+
+                self._xai_client = openai.OpenAI(
+                    base_url=os.environ.get("XAI_BASE_URL", "https://api.x.ai/v1"),
+                    api_key=xai_key,
+                )
+            except ImportError:
+                pass
+        cerebras_key = os.environ.get("CEREBRAS_API_KEY")
+        if cerebras_key:
+            try:
+                import openai
+
+                self._cerebras_client = openai.OpenAI(
+                    base_url=os.environ.get(
+                        "CEREBRAS_BASE_URL", "https://api.cerebras.ai/v1"
+                    ),
+                    api_key=cerebras_key,
+                )
+            except ImportError:
+                pass
+        mistral_key = os.environ.get("MISTRAL_API_KEY")
+        if mistral_key:
+            try:
+                import openai
+
+                self._mistral_client = openai.OpenAI(
+                    base_url=os.environ.get(
+                        "MISTRAL_BASE_URL", "https://api.mistral.ai/v1"
+                    ),
+                    api_key=mistral_key,
                 )
             except ImportError:
                 pass
@@ -1278,6 +1385,165 @@ class CloudEngine(InferenceEngine):
             ]
         return result
 
+    def _generate_openai_compatible(
+        self,
+        client: Any,
+        provider: str,
+        messages: Sequence[Message],
+        *,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Generate against an OpenAI-compatible endpoint (Groq, xAI, Cerebras…).
+
+        These providers all accept the OpenAI chat-completions shape, so one
+        implementation keeps their behaviour — and their error handling — in
+        step instead of drifting apart per provider.
+        """
+        if client is None:
+            raise EngineConnectionError(f"{provider} client not available")
+        create_kwargs: Dict[str, Any] = {
+            "model": model,
+            "messages": messages_to_dicts(messages),
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        response_format = kwargs.pop("response_format", None)
+        if response_format is not None:
+            create_kwargs["response_format"] = response_format
+        tools = kwargs.pop("tools", None)
+        if tools:
+            create_kwargs["tools"] = tools
+        tool_choice = kwargs.pop("tool_choice", None)
+        if tool_choice is not None:
+            create_kwargs["tool_choice"] = tool_choice
+        t0 = time.monotonic()
+        resp = _chat_completion_with_temperature_retry(client, create_kwargs)
+        elapsed = time.monotonic() - t0
+        choice = _first_choice_or_raise(resp, provider=provider, model=model)
+        usage = getattr(resp, "usage", None)
+        prompt_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+        completion_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
+        result: Dict[str, Any] = {
+            "content": choice.message.content or "",
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": (getattr(usage, "total_tokens", 0) if usage else 0),
+            },
+            "model": getattr(resp, "model", None) or model,
+            "finish_reason": choice.finish_reason or "stop",
+            "cost_usd": estimate_cost(model, prompt_tokens, completion_tokens),
+            "ttft": elapsed,
+        }
+        if getattr(choice.message, "tool_calls", None):
+            result["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                }
+                for tc in choice.message.tool_calls
+            ]
+        return result
+
+    def _generate_groq(
+        self,
+        messages: Sequence[Message],
+        *,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        if self._groq_client is None:
+            raise EngineConnectionError(
+                "Groq client not available — set GROQ_API_KEY "
+                "(free at console.groq.com/keys)"
+            )
+        return self._generate_openai_compatible(
+            self._groq_client,
+            "Groq",
+            messages,
+            model=model.removeprefix("groq/"),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+
+    def _generate_xai(
+        self,
+        messages: Sequence[Message],
+        *,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        if self._xai_client is None:
+            raise EngineConnectionError(
+                "Grok (xAI) client not available — set XAI_API_KEY"
+            )
+        actual_model = model.split("/", 1)[1] if "/" in model else model
+        return self._generate_openai_compatible(
+            self._xai_client,
+            "xAI",
+            messages,
+            model=actual_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+
+    def _generate_cerebras(
+        self,
+        messages: Sequence[Message],
+        *,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        if self._cerebras_client is None:
+            raise EngineConnectionError(
+                "Cerebras client not available — set CEREBRAS_API_KEY"
+            )
+        return self._generate_openai_compatible(
+            self._cerebras_client,
+            "Cerebras",
+            messages,
+            model=model.removeprefix("cerebras/"),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+
+    def _generate_mistral(
+        self,
+        messages: Sequence[Message],
+        *,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        if self._mistral_client is None:
+            raise EngineConnectionError(
+                "Mistral client not available — set MISTRAL_API_KEY"
+            )
+        # Mistral rejects temperatures above 1.0.
+        return self._generate_openai_compatible(
+            self._mistral_client,
+            "Mistral",
+            messages,
+            model=model.removeprefix("mistral/"),
+            temperature=min(max(temperature, 0.0), 1.0),
+            max_tokens=max_tokens,
+            **kwargs,
+        )
+
     def generate(
         self,
         messages: Sequence[Message],
@@ -1299,6 +1565,14 @@ class CloudEngine(InferenceEngine):
             return self._generate_openrouter(messages, **kw)
         if _is_atlascloud_model(model):
             return self._generate_atlascloud(messages, **kw)
+        if _is_groq_model(model):
+            return self._generate_groq(messages, **kw)
+        if _is_cerebras_model(model):
+            return self._generate_cerebras(messages, **kw)
+        if _is_mistral_model(model):
+            return self._generate_mistral(messages, **kw)
+        if _is_xai_model(model):
+            return self._generate_xai(messages, **kw)
         if _is_minimax_model(model):
             return self._generate_minimax(messages, **kw)
         if _is_deepseek_model(model):
@@ -1332,6 +1606,26 @@ class CloudEngine(InferenceEngine):
                 yield token
         elif _is_atlascloud_model(model):
             async for token in self._stream_atlascloud(messages, **kw):
+                yield token
+        elif _is_groq_model(model):
+            async for token in self._stream_compatible(
+                self._groq_client, "Groq", "groq/", messages, **kw
+            ):
+                yield token
+        elif _is_cerebras_model(model):
+            async for token in self._stream_compatible(
+                self._cerebras_client, "Cerebras", "cerebras/", messages, **kw
+            ):
+                yield token
+        elif _is_mistral_model(model):
+            async for token in self._stream_compatible(
+                self._mistral_client, "Mistral", "mistral/", messages, **kw
+            ):
+                yield token
+        elif _is_xai_model(model):
+            async for token in self._stream_compatible(
+                self._xai_client, "xAI", "", messages, **kw
+            ):
                 yield token
         elif _is_minimax_model(model):
             async for token in self._stream_minimax(messages, **kw):
@@ -1779,6 +2073,43 @@ class CloudEngine(InferenceEngine):
             if delta and delta.content:
                 yield delta.content
 
+    async def _stream_compatible(
+        self,
+        client: Any,
+        provider: str,
+        prefix: str,
+        messages: Sequence[Message],
+        *,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """Stream from an OpenAI-compatible endpoint (Groq, xAI, Cerebras…)."""
+        if client is None:
+            raise EngineConnectionError(f"{provider} client not available")
+        actual_model = model.removeprefix(prefix) if prefix else model
+        if not prefix and "/" in actual_model:
+            actual_model = actual_model.split("/", 1)[1]
+        create_kwargs: Dict[str, Any] = {
+            "model": actual_model,
+            "messages": messages_to_dicts(messages),
+            "max_tokens": max_tokens,
+            "temperature": min(max(temperature, 0.0), 1.0),
+            "stream": True,
+        }
+        tools = kwargs.pop("tools", None)
+        if tools:
+            create_kwargs["tools"] = tools
+        tool_choice = kwargs.pop("tool_choice", None)
+        if tool_choice is not None:
+            create_kwargs["tool_choice"] = tool_choice
+        resp = _chat_completion_with_temperature_retry(client, create_kwargs)
+        for chunk in resp:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta and delta.content:
+                yield delta.content
+
     # -- stream_full: rich streaming with tool_calls support ----------------
 
     async def _stream_full_openai(
@@ -1827,6 +2158,54 @@ class CloudEngine(InferenceEngine):
                 "messages": messages_to_dicts(messages),
                 "max_tokens": max_tokens,
                 "temperature": temperature,
+                "stream": True,
+                **kwargs,
+            }
+        elif _is_groq_model(model):
+            client = self._groq_client
+            if client is None:
+                raise EngineConnectionError("Groq client not available")
+            create_kwargs = {
+                "model": model.removeprefix("groq/"),
+                "messages": messages_to_dicts(messages),
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "stream": True,
+                **kwargs,
+            }
+        elif _is_cerebras_model(model):
+            client = self._cerebras_client
+            if client is None:
+                raise EngineConnectionError("Cerebras client not available")
+            create_kwargs = {
+                "model": model.removeprefix("cerebras/"),
+                "messages": messages_to_dicts(messages),
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "stream": True,
+                **kwargs,
+            }
+        elif _is_mistral_model(model):
+            client = self._mistral_client
+            if client is None:
+                raise EngineConnectionError("Mistral client not available")
+            create_kwargs = {
+                "model": model.removeprefix("mistral/"),
+                "messages": messages_to_dicts(messages),
+                "max_tokens": max_tokens,
+                "temperature": min(max(temperature, 0.0), 1.0),
+                "stream": True,
+                **kwargs,
+            }
+        elif _is_xai_model(model):
+            client = self._xai_client
+            if client is None:
+                raise EngineConnectionError("xAI client not available")
+            create_kwargs = {
+                "model": model.split("/", 1)[1] if "/" in model else model,
+                "messages": messages_to_dicts(messages),
+                "max_tokens": max_tokens,
+                "temperature": min(max(temperature, 0.0), 1.0),
                 "stream": True,
                 **kwargs,
             }
@@ -2028,6 +2407,14 @@ class CloudEngine(InferenceEngine):
             models.extend(_MINIMAX_MODELS)
         if self._deepseek_client is not None:
             models.extend(_DEEPSEEK_MODELS)
+        if self._groq_client is not None:
+            models.extend(f"groq/{name}" for name in _GROQ_MODELS)
+        if self._xai_client is not None:
+            models.extend(f"grok/{name}" for name in _XAI_MODELS)
+        if self._cerebras_client is not None:
+            models.extend(f"cerebras/{name}" for name in _CEREBRAS_MODELS)
+        if self._mistral_client is not None:
+            models.extend(f"mistral/{name}" for name in _MISTRAL_MODELS)
         if self._codex_client is not None:
             models.extend(_CODEX_MODELS)
         return models
@@ -2051,6 +2438,14 @@ class CloudEngine(InferenceEngine):
             return self._openrouter_client
         if _is_atlascloud_model(model):
             return self._atlascloud_client
+        if _is_groq_model(model):
+            return self._groq_client
+        if _is_cerebras_model(model):
+            return self._cerebras_client
+        if _is_mistral_model(model):
+            return self._mistral_client
+        if _is_xai_model(model):
+            return self._xai_client
         if _is_minimax_model(model):
             return self._minimax_client
         if _is_deepseek_model(model):
@@ -2085,6 +2480,10 @@ class CloudEngine(InferenceEngine):
             or self._atlascloud_client is not None
             or self._minimax_client is not None
             or self._deepseek_client is not None
+            or self._groq_client is not None
+            or self._xai_client is not None
+            or self._cerebras_client is not None
+            or self._mistral_client is not None
             or self._codex_client is not None
         )
 
@@ -2117,6 +2516,16 @@ class CloudEngine(InferenceEngine):
             if hasattr(self._deepseek_client, "close"):
                 self._deepseek_client.close()
             self._deepseek_client = None
+        for attr in (
+            "_groq_client",
+            "_xai_client",
+            "_cerebras_client",
+            "_mistral_client",
+        ):
+            client = getattr(self, attr, None)
+            if client is not None and hasattr(client, "close"):
+                client.close()
+            setattr(self, attr, None)
         if self._codex_client is not None:
             self._codex_client = None
 

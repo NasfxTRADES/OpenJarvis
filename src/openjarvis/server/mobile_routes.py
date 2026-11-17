@@ -39,6 +39,7 @@ from openjarvis.core.credentials import (
 from openjarvis.core.paths import get_config_dir
 from openjarvis.core.types import Message
 from openjarvis.engine._stubs import InferenceEngine
+from openjarvis.engine.failover import FailoverEngine, build_free_failover_engine
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,7 @@ class MobileRuntime:
         self._scheduler: Any = None
         self._lock = threading.Lock()
         self._jobs: dict[str, float] = {}
+        self._auto_attempted = False
         # Key files on the server mean the phone never has to paste one.
         load_provider_key_files()
 
@@ -280,7 +282,15 @@ class MobileRuntime:
         engine = getattr(self.app.state, "engine", None)
         model = getattr(self.app.state, "model", "") or ""
         if engine is None or isinstance(engine, UnconfiguredEngine) or not model:
-            return
+            # First use with no provider chosen: build the free-provider chain
+            # in the background so this request is not held up by discovery.
+            self.start_auto()
+            if getattr(self.app.state, "agent", None) is not None:
+                return
+            engine = getattr(self.app.state, "engine", None)
+            model = getattr(self.app.state, "model", "") or ""
+            if engine is None or isinstance(engine, UnconfiguredEngine) or not model:
+                return
         try:
             agent = build_mobile_agent(
                 engine, model, self._scheduler, bus=getattr(self.app.state, "bus", None)
@@ -291,6 +301,62 @@ class MobileRuntime:
         self.app.state.agent = agent
         self.app.state.agent_name = "mobile"
         self._wire_scheduler_tools()
+
+    def start_auto(self) -> None:
+        """Build the free-provider failover chain once, in the background.
+
+        Every key on the server joins the chain in free-first order, so a
+        provider whose allowance runs out is simply skipped until its cooldown
+        expires instead of the assistant going silent.
+        """
+        if self._auto_attempted:
+            return
+        self._auto_attempted = True
+
+        def _build() -> None:
+            try:
+                engine = build_free_failover_engine()
+            except Exception as exc:  # pragma: no cover - optional extras
+                logger.warning("Free provider chain unavailable: %s", exc)
+                return
+            if engine is None:
+                return
+            try:
+                self._activate_chain(engine)
+            except Exception:
+                logger.exception("Activating the free provider chain failed")
+
+        threading.Thread(target=_build, name="free-provider-chain", daemon=True).start()
+
+    def _activate_chain(self, engine: FailoverEngine) -> None:
+        """Make the failover chain the live engine, keeping a saved choice."""
+        settings = load_settings()
+        if (settings.get("provider") or "") not in ("", "auto"):
+            # The user picked one provider in Settings; do not override it.
+            return
+        self.app.state.engine = engine
+        self.app.state.engine_name = "auto"
+        self.app.state.model = engine.primary_model
+        try:
+            self.app.state.agent = build_mobile_agent(
+                engine,
+                engine.primary_model,
+                self._scheduler,
+                bus=getattr(self.app.state, "bus", None),
+            )
+            self.app.state.agent_name = "mobile"
+        except Exception:
+            logger.exception("Could not build the mobile agent for the free chain")
+        self._wire_scheduler_tools()
+        settings.update(
+            {
+                "provider": "auto",
+                "model": engine.primary_model,
+                "models": engine.model_ids(),
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+        )
+        _save_settings(settings)
 
     def start(self) -> None:
         try:
@@ -336,11 +402,18 @@ class MobileRuntime:
         model = getattr(self.app.state, "model", "") or ""
         configured = bool(model) and not isinstance(engine, UnconfiguredEngine)
         models = settings.get("models") or []
+        chain: list[dict[str, Any]] = []
+        active_provider = ""
+        if isinstance(engine, FailoverEngine):
+            chain = engine.describe()
+            active_provider = engine.active_label()
         return {
             "configured": configured,
             "provider": settings.get("provider", "") or self._engine_label(),
             "model": model,
             "models": models,
+            "chain": chain,
+            "active_provider": active_provider,
             "voice": self.voice_status(),
             "tasks": len(self.list_tasks()),
             "free_models": list(FALLBACK_FREE_MODELS),
@@ -386,6 +459,8 @@ class MobileRuntime:
         base_url: str = "",
     ) -> dict[str, Any]:
         provider = (provider or "").strip().lower()
+        if provider == "auto":
+            return await self._configure_auto()
         if provider == "openrouter":
             return await self._configure_openrouter(api_key=api_key, model=model)
         if provider == "gemini":
@@ -393,6 +468,35 @@ class MobileRuntime:
         if provider == "ollama":
             return await self._configure_ollama(model=model, base_url=base_url)
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider!r}")
+
+    async def _configure_auto(self) -> dict[str, Any]:
+        """Use every free provider key on this server, with automatic failover."""
+        import asyncio
+
+        engine = await asyncio.to_thread(build_free_failover_engine)
+        if engine is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No AI provider key is configured on this server yet. Add "
+                    "GROQ_API_KEY (console.groq.com/keys), GEMINI_API_KEY "
+                    "(aistudio.google.com/apikey) or OPENROUTER_API_KEY "
+                    "(openrouter.ai/keys) — each is free — and try again."
+                ),
+            )
+        self._activate(
+            engine,
+            engine.primary_model,
+            provider="auto",
+            models=engine.model_ids(),
+        )
+        return {
+            "configured": True,
+            "provider": "auto",
+            "model": engine.primary_model,
+            "models": engine.model_ids(),
+            "chain": engine.describe(),
+        }
 
     async def _configure_openrouter(
         self, *, api_key: str, model: str
@@ -935,6 +1039,12 @@ def install_mobile_runtime(app: Any, *, config: Any = None, api_key: str = "") -
     """Attach the mobile runtime; its scheduler starts on first use."""
     runtime = MobileRuntime(app, config=config, api_key=api_key)
     app.state.mobile_runtime = runtime
+    # No provider chosen at startup? Build the free-provider chain now rather
+    # than making the phone's first request wait on model discovery.
+    if getattr(app.state, "engine", None) is None or isinstance(
+        getattr(app.state, "engine", None), UnconfiguredEngine
+    ):
+        runtime.start_auto()
 
     @app.on_event("shutdown")
     async def _shutdown_mobile_runtime() -> None:

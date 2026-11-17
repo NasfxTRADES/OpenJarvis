@@ -14,7 +14,9 @@ export function SettingsView({
 }) {
   const [apiKey, setApiKey] = useState('');
   const [geminiKey, setGeminiKey] = useState('');
-  const [busy, setBusy] = useState<'openrouter' | 'gemini' | 'ollama' | 'model' | null>(null);
+  const [busy, setBusy] = useState<
+    'openrouter' | 'gemini' | 'ollama' | 'model' | 'auto' | null
+  >(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [models, setModels] = useState<string[]>(status?.models || []);
@@ -26,7 +28,7 @@ export function SettingsView({
   }, [status?.models, status?.model]);
 
   const run = async (
-    kind: 'openrouter' | 'gemini' | 'ollama' | 'model',
+    kind: 'openrouter' | 'gemini' | 'ollama' | 'model' | 'auto',
     body: { provider: string; api_key?: string; model?: string },
   ) => {
     setBusy(kind);
@@ -87,6 +89,8 @@ export function SettingsView({
     void run('gemini', { provider: 'gemini', api_key: geminiKey.trim() });
   };
 
+  const chain = status?.chain || [];
+
   const provider =
     status?.provider === 'ollama'
       ? 'ollama'
@@ -108,6 +112,12 @@ export function SettingsView({
           <span>Model</span>
           <strong className="truncate">{status?.model || '—'}</strong>
         </div>
+        {status?.active_provider && (
+          <div className="kv">
+            <span>Answering with</span>
+            <strong>{status.active_provider}</strong>
+          </div>
+        )}
         <div className="kv">
           <span>Automations</span>
           <strong>{status?.tasks ?? 0}</strong>
@@ -149,6 +159,39 @@ export function SettingsView({
           </button>
         </section>
       )}
+
+      <section className="setting-card">
+        <h3>Never run out — automatic failover</h3>
+        <p className="muted small">
+          Jarvis uses these in order and moves to the next one whenever a
+          provider runs out of its free allowance, so replies keep coming.
+        </p>
+        {chain.length === 0 ? (
+          <p className="muted small">
+            No providers are chained yet. Add a free key on the server (Groq,
+            Cerebras, Gemini, Mistral, OpenRouter), then press Rebuild.
+          </p>
+        ) : (
+          chain.map((entry) => (
+            <div className="kv" key={`${entry.provider}-${entry.model}`}>
+              <span>{entry.label}</span>
+              <strong className={entry.ready ? 'ok-text' : 'warn-text'}>
+                {entry.ready
+                  ? entry.model.replace(/^[a-z]+\//, '')
+                  : `resting ${Math.max(1, Math.round(entry.cooldown_seconds / 60))}m`}
+              </strong>
+            </div>
+          ))
+        )}
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy !== null}
+          onClick={() => void run('auto', { provider: 'auto' })}
+        >
+          {busy === 'auto' ? 'Rebuilding…' : 'Rebuild free chain'}
+        </button>
+      </section>
 
       <section className="setting-card">
         <h3>OpenRouter — free models</h3>

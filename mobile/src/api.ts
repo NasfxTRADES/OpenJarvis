@@ -17,11 +17,22 @@ export interface VoiceStatus {
   reason?: string;
 }
 
+export interface ChainEntry {
+  provider: string;
+  label: string;
+  model: string;
+  ready: boolean;
+  cooldown_seconds: number;
+  last_error: string;
+}
+
 export interface MobileStatus {
   configured: boolean;
   provider: string;
   model: string;
   models: string[];
+  chain?: ChainEntry[];
+  active_provider?: string;
   tasks: number;
   free_models: string[];
   key_source?: string;
