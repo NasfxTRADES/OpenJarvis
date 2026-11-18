@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ApiError,
-  streamChat,
+  streamVoice,
   transcribeAudio,
   type ChatMessage,
   type MobileStatus,
@@ -39,8 +39,8 @@ const WAVE_BARS = 56;
 const MINI_BARS = 40;
 // Sustained microphone level that means the operator started talking over the
 // reply. Echo cancellation keeps Jarvis's own voice below this.
-const BARGE_IN_LEVEL = 0.2;
-const BARGE_IN_TICKS = 3;
+const BARGE_IN_LEVEL = 0.16;
+const BARGE_IN_TICKS = 2;
 
 const COMMANDS = [
   'What is my status?',
@@ -399,7 +399,7 @@ export function JarvisView({
       const controller = new AbortController();
       abortRef.current = controller;
       try {
-        for await (const token of streamChat(status?.model || '', history, controller.signal)) {
+        for await (const token of streamVoice(history, controller.signal)) {
           if (first) {
             first = false;
             setLatency(Math.round(performance.now() - started));
@@ -496,20 +496,15 @@ export function JarvisView({
     log('Conversation ended');
   }, [log, queue, releaseMic]);
 
+  // One control, like a phone call: start the line, end the line. Talking over
+  // Jarvis is the only way to interrupt him — never a tap.
   const toggleMic = useCallback(() => {
-    if (speaking) {
-      // Interrupt the reply but stay in the conversation.
-      queue.stop();
-      window.setTimeout(() => ensureListening(), 0);
-      log('Interrupted');
-      return;
-    }
     if (conversation) {
       endConversation();
       return;
     }
     void startConversation();
-  }, [conversation, endConversation, ensureListening, log, queue, speaking, startConversation]);
+  }, [conversation, endConversation, startConversation]);
 
   // Speaking stops the recogniser (so Jarvis never transcribes himself),
   // watches the microphone for a barge-in, and hands back to listening the
@@ -558,11 +553,7 @@ export function JarvisView({
     : configured
       ? 'Ready for input...'
       : 'No AI core connected.';
-  const micLabel = speaking
-    ? 'TAP TO INTERRUPT'
-    : conversation
-      ? 'TAP TO END CONVERSATION'
-      : 'TAP TO TALK';
+  const micLabel = conversation ? 'TAP TO END CALL' : 'TAP TO CALL';
 
   return (
     <div className={`hud hud-${mode}`}>

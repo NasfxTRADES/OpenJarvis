@@ -156,6 +156,69 @@ export function fetchRuns(id: string): Promise<{ runs: TaskRun[] }> {
   return request(`/v1/mobile/tasks/${id}/runs`);
 }
 
+/** Read an OpenAI-style SSE body as text deltas. */
+async function* sseDeltas(response: Response): AsyncGenerator<string> {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (!data || data === '[DONE]') continue;
+        try {
+          const chunk = JSON.parse(data);
+          const delta = chunk?.choices?.[0]?.delta?.content;
+          if (delta) yield String(delta);
+        } catch {
+          // tolerate keep-alive or partial frames
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/**
+ * Stream a spoken reply straight from the engine.
+ *
+ * This skips the tool-using agent, which finishes its whole loop before it
+ * says anything: the first words arrive while the rest is still generating.
+ */
+export async function* streamVoice(
+  messages: ChatMessage[],
+  signal?: AbortSignal,
+): AsyncGenerator<string> {
+  const response = await fetch('/v1/mobile/reply', {
+    method: 'POST',
+    headers: headers({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ messages, max_tokens: 320 }),
+    signal,
+  });
+  if (response.status === 401) {
+    throw new ApiError(401, 'This phone is not paired with the server.');
+  }
+  if (!response.ok || !response.body) {
+    let detail = `Chat failed (${response.status})`;
+    try {
+      const body = await response.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      // ignore
+    }
+    throw new ApiError(response.status, detail);
+  }
+  yield* sseDeltas(response);
+}
+
 /** Turn a reply into audio with the server's configured voice. */
 export async function synthesize(text: string, speed = 1.12): Promise<Blob> {
   const response = await fetch('/v1/mobile/speech', {

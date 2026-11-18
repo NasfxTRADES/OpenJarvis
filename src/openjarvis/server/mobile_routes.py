@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from openjarvis.core.credentials import (
@@ -38,7 +39,7 @@ from openjarvis.core.credentials import (
     probe_gemini_generation,
 )
 from openjarvis.core.paths import get_config_dir
-from openjarvis.core.types import Message
+from openjarvis.core.types import Message, Role
 from openjarvis.engine._stubs import InferenceEngine
 from openjarvis.engine.failover import FailoverEngine, build_free_failover_engine
 
@@ -983,6 +984,28 @@ class MobileTaskPatch(BaseModel):
     status: str
 
 
+# Spoken turns are short by design: fewer tokens means the first sentence is
+# ready sooner, and a sentence or two is what a person expects to hear.
+_VOICE_SYSTEM_PROMPT = (
+    "You are J.A.R.V.I.S., the operator's personal AI assistant, speaking out "
+    "loud through a voice interface. Answer in as few words as fully answer: "
+    "one or two short sentences for most questions, never more than four. Never "
+    "use markdown, bullet lists, code fences, emojis or headings, because your "
+    "words are read aloud. Be direct, confident and calm, address the operator "
+    "as 'sir' at most once, and never mention being a language model or an AI."
+)
+
+
+class MobileReplyMessage(BaseModel):
+    role: str
+    content: str
+
+
+class MobileReplyRequest(BaseModel):
+    messages: list[MobileReplyMessage]
+    max_tokens: int = 320
+
+
 class MobileSpeechRequest(BaseModel):
     text: str
     voice_id: str = ""
@@ -1002,6 +1025,62 @@ def _runtime(request: Request) -> MobileRuntime:
 @router.get("/status")
 async def mobile_status(request: Request) -> dict[str, Any]:
     return _runtime(request).status()
+
+
+@router.post("/reply")
+async def mobile_reply(
+    body: MobileReplyRequest, request: Request
+) -> StreamingResponse:
+    """Stream a spoken-style reply token by token.
+
+    The agent endpoint owns a tool loop and returns its answer in one piece,
+    which puts seconds of silence in the middle of a voice turn. This path goes
+    straight to the inference engine so the first words can be spoken while the
+    rest is still being generated.
+    """
+    runtime = _runtime(request)
+    await asyncio.to_thread(runtime.ensure_started)
+    engine = getattr(request.app.state, "engine", None)
+    model = getattr(request.app.state, "model", "") or ""
+    if engine is None or not model:
+        raise HTTPException(status_code=503, detail=_NEED_SETUP_MESSAGE)
+
+    messages: list[Message] = [
+        Message(role=Role.SYSTEM, content=_VOICE_SYSTEM_PROMPT)
+    ]
+    for entry in body.messages[-10:]:
+        if not entry.content.strip():
+            continue
+        role = Role.ASSISTANT if entry.role == "assistant" else Role.USER
+        messages.append(Message(role=role, content=entry.content))
+
+    max_tokens = max(64, min(700, body.max_tokens))
+
+    def sse(content: str) -> str:
+        payload = {"choices": [{"delta": {"content": content}}]}
+        return f"data: {json.dumps(payload)}\n\n"
+
+    async def events() -> AsyncIterator[str]:
+        yield 'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+        try:
+            async for token in engine.stream(
+                messages,
+                model=model,
+                temperature=0.65,
+                max_tokens=max_tokens,
+            ):
+                if token:
+                    yield sse(token)
+        except Exception as exc:  # noqa: BLE001 - report, never hang the turn
+            logger.warning("Voice reply failed: %s", exc)
+            yield sse(f"I could not reach a model just now: {exc}")
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/speech")
