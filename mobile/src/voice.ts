@@ -41,6 +41,13 @@ export interface Recognizer {
 
 type RecognizerCtor = new () => Recognizer;
 
+/** 24 kHz silent sample used to unlock audio playback inside a tap. */
+const SILENT_WAV =
+  'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAIA+AAABAAgAZGF0YQAAAAA=';
+
+/** Slightly quicker than natural speech, which is how Jarvis should read. */
+export const SPEECH_SPEED = 1.12;
+
 function recognizerCtor(): RecognizerCtor | null {
   if (typeof window === 'undefined') return null;
   const scope = window as unknown as {
@@ -127,25 +134,54 @@ export class MicMeter {
   }
 }
 
-/** Splits streamed reply text into speakable sentences. */
+/**
+ * Splits streamed reply text into speakable pieces.
+ *
+ * The first piece is cut early — at a clause boundary if there is one — because
+ * waiting for a full sentence is most of the delay before Jarvis's first word.
+ */
 export class SentenceSplitter {
   private buffer = '';
+  private started = false;
 
   push(chunk: string): string[] {
     this.buffer += chunk;
     const ready: string[] = [];
-    let match = /[.!?…]+["')\]]*\s/.exec(this.buffer);
+    const sentence = /[.!?…]+["')\]]*\s/;
+    let match = sentence.exec(this.buffer);
     while (match) {
       const end = match.index + match[0].length;
-      const sentence = this.buffer.slice(0, end).trim();
+      const piece = this.buffer.slice(0, end).trim();
       this.buffer = this.buffer.slice(end);
-      if (sentence) ready.push(sentence);
-      match = /[.!?…]+["')\]]*\s/.exec(this.buffer);
+      if (piece) ready.push(piece);
+      match = sentence.exec(this.buffer);
     }
+    if (ready.length) this.started = true;
+
+    if (!this.started && this.buffer.length > 44) {
+      // First sound out fast: cut at a comma or dash if the reply has one.
+      const clause = /[,;:—-]\s/.exec(this.buffer);
+      if (clause) {
+        const end = clause.index + clause[0].length;
+        const piece = this.buffer.slice(0, end).trim();
+        if (piece.length >= 24) {
+          ready.push(piece);
+          this.buffer = this.buffer.slice(end);
+          this.started = true;
+        }
+      } else if (this.buffer.length > 80) {
+        const cut = this.buffer.lastIndexOf(' ', 72);
+        const take = cut > 24 ? cut : 72;
+        ready.push(this.buffer.slice(0, take).trim());
+        this.buffer = this.buffer.slice(take);
+        this.started = true;
+      }
+    }
+
     // A long stretch without sentence punctuation still needs to be spoken.
-    if (this.buffer.length > 220) {
-      const cut = this.buffer.lastIndexOf(' ', 200);
-      const take = cut > 40 ? cut : 200;
+    if (this.buffer.length > 160) {
+      const cut = this.buffer.lastIndexOf(' ', 140);
+      const take = cut > 40 ? cut : 140;
       ready.push(this.buffer.slice(0, take).trim());
       this.buffer = this.buffer.slice(take);
     }
@@ -162,16 +198,24 @@ export class SentenceSplitter {
 /**
  * Plays reply audio in order. Falls back to the browser's own speech synthesis
  * when the server has no voice configured, so Jarvis is never silent.
+ *
+ * One audio element is reused for every sentence and unlocked inside the tap
+ * that starts the conversation: iOS only allows playback after a user gesture,
+ * and the first reply can arrive a minute later.
  */
 export class SpeechQueue {
   private sentences: string[] = [];
   private playing = false;
+  private pumping = false;
   private audio: HTMLAudioElement | null = null;
-  private url = '';
   private context: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private buffer: Float32Array<ArrayBuffer> | null = null;
   private fallback: SpeechSynthesisUtterance | null = null;
+  private cache = new Map<string, Promise<Blob>>();
+  private pendingResolve: (() => void) | null = null;
+  private primed = false;
+  speed = SPEECH_SPEED;
 
   constructor(
     private readonly onBusyChange: (busy: boolean) => void,
@@ -182,29 +226,52 @@ export class SpeechQueue {
     return this.playing;
   }
 
+  /** Call from a tap handler so later playback is allowed. */
+  prime(): void {
+    if (this.primed) return;
+    this.primed = true;
+    try {
+      const audio = this.element();
+      audio.muted = true;
+      audio.src = SILENT_WAV;
+      void audio
+        .play()
+        .then(() => {
+          audio.pause();
+          audio.muted = false;
+        })
+        .catch(() => {
+          audio.muted = false;
+        });
+    } catch {
+      // A blocked prime is not fatal: the first play attempt retries.
+    }
+    if (this.context?.state === 'suspended') void this.context.resume();
+  }
+
   enqueue(text: string): void {
     const trimmed = text.trim();
     if (!trimmed) return;
     this.sentences.push(trimmed);
-    if (!this.playing) void this.pump();
+    if (!this.pumping) void this.pump();
   }
 
-  /** Silence immediately — used for barge-in. */
+  /** Silence immediately — used for barge-in and for ending a conversation. */
   stop(): void {
     this.sentences = [];
     if (this.audio) {
       this.audio.onended = null;
+      this.audio.onerror = null;
       this.audio.pause();
-      this.audio = null;
-    }
-    if (this.url) {
-      URL.revokeObjectURL(this.url);
-      this.url = '';
     }
     if (this.fallback) {
       window.speechSynthesis?.cancel();
       this.fallback = null;
     }
+    const resolve = this.pendingResolve;
+    this.pendingResolve = null;
+    resolve?.();
+    this.cache.clear();
     if (this.playing) {
       this.playing = false;
       this.onBusyChange(false);
@@ -231,43 +298,79 @@ export class SpeechQueue {
     this.buffer = null;
   }
 
+  private element(): HTMLAudioElement {
+    if (!this.audio) {
+      const audio = new Audio();
+      audio.preload = 'auto';
+      this.audio = audio;
+      this.attachAnalyser(audio);
+    }
+    return this.audio;
+  }
+
+  private fetchAudio(text: string): Promise<Blob> {
+    const cached = this.cache.get(text);
+    if (cached) return cached;
+    const request = synthesize(text, this.speed).finally(() => {
+      this.cache.delete(text);
+    });
+    this.cache.set(text, request);
+    return request;
+  }
+
   private async pump(): Promise<void> {
+    if (this.pumping) return;
+    this.pumping = true;
     this.playing = true;
     this.onBusyChange(true);
     while (this.sentences.length) {
-      const sentence = this.sentences.shift() as string;
+      const sentence = this.sentences[0];
+      const next = this.sentences[1];
+      // Fetch the following sentence while this one plays: the gap between
+      // sentences is the other half of the perceived delay.
+      if (next) void this.fetchAudio(next).catch(() => {});
       let serverVoice = true;
       try {
-        const blob = await synthesize(sentence);
+        const blob = await this.fetchAudio(sentence);
+        if (!this.playing) break;
+        this.sentences.shift();
         await this.playBlob(blob);
       } catch {
+        if (!this.playing) break;
         serverVoice = false;
+        this.sentences.shift();
         await this.playBrowserVoice(sentence);
       }
       this.onServerVoice(serverVoice);
     }
-    this.playing = false;
-    this.onBusyChange(false);
+    this.pumping = false;
+    if (this.playing) {
+      this.playing = false;
+      this.onBusyChange(false);
+    }
   }
 
   private async playBlob(blob: Blob): Promise<void> {
-    if (this.url) URL.revokeObjectURL(this.url);
-    this.url = URL.createObjectURL(blob);
-    const audio = new Audio(this.url);
-    audio.preload = 'auto';
-    this.audio = audio;
-    this.attachAnalyser(audio);
+    const audio = this.element();
+    if (!audio.src.startsWith('blob:')) {
+      // First real clip: release the silent prime recording.
+      audio.src = '';
+    }
+    const url = URL.createObjectURL(blob);
+    audio.src = url;
     await new Promise<void>((resolve) => {
       const done = () => {
         audio.onended = null;
         audio.onerror = null;
+        this.pendingResolve = null;
+        URL.revokeObjectURL(url);
         resolve();
       };
+      this.pendingResolve = done;
       audio.onended = done;
       audio.onerror = done;
       void audio.play().catch(done);
     });
-    this.audio = null;
   }
 
   private playBrowserVoice(sentence: string): Promise<void> {
@@ -275,7 +378,7 @@ export class SpeechQueue {
     return new Promise<void>((resolve) => {
       const utterance = new SpeechSynthesisUtterance(sentence);
       utterance.lang = 'en-GB';
-      utterance.rate = 1.02;
+      utterance.rate = 1.18;
       utterance.pitch = 0.85;
       this.fallback = utterance;
       const done = () => {

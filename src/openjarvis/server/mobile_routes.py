@@ -987,6 +987,9 @@ class MobileSpeechRequest(BaseModel):
     text: str
     voice_id: str = ""
     format: str = "mp3"
+    # Spoken replies read a little quicker than a document would; the client
+    # asks for that explicitly instead of the server guessing.
+    speed: float = 1.12
 
 
 def _runtime(request: Request) -> MobileRuntime:
@@ -1027,6 +1030,7 @@ async def mobile_speech(body: MobileSpeechRequest, request: Request) -> Response
             text,
             voice_id=body.voice_id,
             output_format=body.format,
+            speed=max(0.5, min(2.0, body.speed)),
         )
     except Exception as exc:
         logger.warning("Voice synthesis failed: %s", exc)

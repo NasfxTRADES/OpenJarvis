@@ -1,6 +1,10 @@
 // The Jarvis HUD: one screen where every readout is real application state.
 // The core reacts to the live voice mode, the waveform is the actual
 // microphone or reply-audio level, and the panels report measured values.
+//
+// Talking is hands-free: one tap opens the microphone and the conversation
+// keeps turning — listen, answer, speak, listen again — until the same control
+// ends it. Speaking over Jarvis cuts the reply short and starts a new turn.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -33,6 +37,10 @@ const TRANSCRIPT_STORAGE = 'oj.voice.v1';
 const ACTIVITY_LIMIT = 5;
 const WAVE_BARS = 56;
 const MINI_BARS = 40;
+// Sustained microphone level that means the operator started talking over the
+// reply. Echo cancellation keeps Jarvis's own voice below this.
+const BARGE_IN_LEVEL = 0.2;
+const BARGE_IN_TICKS = 3;
 
 const COMMANDS = [
   'What is my status?',
@@ -208,6 +216,7 @@ export function JarvisView({
 }) {
   const [transcript, setTranscript] = useState<ChatMessage[]>(loadTranscript);
   const [partial, setPartial] = useState('');
+  const [conversation, setConversation] = useState(false);
   const [listening, setListening] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [speaking, setSpeaking] = useState(false);
@@ -219,7 +228,9 @@ export function JarvisView({
   const [recording, setRecording] = useState(false);
 
   const transcriptRef = useRef(transcript);
-  const listeningRef = useRef(false);
+  const conversationRef = useRef(false);
+  const speakingRef = useRef(false);
+  const thinkingRef = useRef(false);
   const busyRef = useRef(false);
   const idRef = useRef(0);
   const meterRef = useRef<MicMeter | null>(null);
@@ -228,6 +239,7 @@ export function JarvisView({
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  const sendRef = useRef<(text: string) => Promise<void>>(async () => {});
 
   const queue = useMemo(
     () => new SpeechQueue(setSpeaking, (usedServerVoice) => setFallbackVoice(!usedServerVoice)),
@@ -238,7 +250,7 @@ export function JarvisView({
     ? 'speaking'
     : thinking
       ? 'thinking'
-      : listening
+      : conversation
         ? 'listening'
         : 'idle';
 
@@ -269,18 +281,93 @@ export function JarvisView({
     };
   }, [log, queue]);
 
-  const releaseMic = useCallback(() => {
-    listeningRef.current = false;
-    recognizerRef.current?.abort();
-    recognizerRef.current = null;
-    meterRef.current?.dispose();
-    meterRef.current = null;
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    setListening(false);
-    setRecording(false);
-    setPartial('');
+  /** Restart the recogniser for the next turn, if a turn is in progress. */
+  const ensureListening = useCallback(() => {
+    if (!conversationRef.current || speakingRef.current || thinkingRef.current) return;
+    const recognizer = recognizerRef.current;
+    if (!recognizer) return;
+    try {
+      recognizer.start();
+    } catch {
+      // Already running; the onend handler will restart it when it stops.
+    }
   }, []);
+
+  const startRecordingFallback = useCallback(() => {
+    const stream = streamRef.current;
+    if (!stream || typeof MediaRecorder === 'undefined') {
+      setError('This browser cannot record audio.');
+      return;
+    }
+    const recorder = new MediaRecorder(stream);
+    chunksRef.current = [];
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunksRef.current.push(event.data);
+    };
+    recorder.onstop = () => {
+      const blob = new Blob(chunksRef.current, {
+        type: recorder.mimeType || 'audio/webm',
+      });
+      chunksRef.current = [];
+      setRecording(false);
+      if (!blob.size) return;
+      void transcribeAudio(blob, 'voice.webm')
+        .then((text) => {
+          if (text) void sendRef.current(text);
+          else if (conversationRef.current) startRecordingFallback();
+        })
+        .catch((err: unknown) => {
+          setError(err instanceof ApiError ? err.message : 'Could not transcribe that.');
+          if (conversationRef.current) startRecordingFallback();
+        });
+    };
+    recorder.start();
+    recorderRef.current = recorder;
+    setRecording(true);
+  }, []);
+
+  const startRecognising = useCallback(() => {
+    const recognizer = createRecognizer();
+    if (!recognizer) return false;
+    recognizerRef.current = recognizer;
+    recognizer.onresult = (event) => {
+      // While Jarvis speaks the recogniser is stopped, but a late result must
+      // still never be mistaken for the operator's next turn.
+      if (speakingRef.current) return;
+      let interim = '';
+      let final = '';
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const text = result?.[0]?.transcript || '';
+        if (result?.isFinal) final += text;
+        else interim += text;
+      }
+      if (interim.trim()) setPartial(interim.trim());
+      if (final.trim()) {
+        setPartial('');
+        void sendRef.current(final.trim());
+      }
+    };
+    recognizer.onerror = (event) => {
+      const message = recognitionError(event.error);
+      if (message) setError(message);
+      if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(event.error)) {
+        conversationRef.current = false;
+        setConversation(false);
+      }
+    };
+    recognizer.onend = () => {
+      if (!conversationRef.current || speakingRef.current) return;
+      // Browsers drop a session after a silence; keep the conversation open.
+      window.setTimeout(() => ensureListening(), 250);
+    };
+    try {
+      recognizer.start();
+      return true;
+    } catch {
+      return false;
+    }
+  }, [ensureListening]);
 
   const send = useCallback(
     async (text: string) => {
@@ -292,14 +379,17 @@ export function JarvisView({
       }
       busyRef.current = true;
       setError('');
+      // Only the recent turns go to the model: a long history costs time to
+      // first token, and a spoken conversation rarely needs the whole log.
       const history: ChatMessage[] = [
-        ...transcriptRef.current,
+        ...transcriptRef.current.filter((message) => message.content).slice(-8),
         { role: 'user', content: prompt },
       ];
       const pending: ChatMessage[] = [...history, { role: 'assistant', content: '' }];
       setTranscript(pending);
       transcriptRef.current = pending;
       setThinking(true);
+      thinkingRef.current = true;
       log(`Request: ${truncate(prompt, 30)}`);
 
       const splitter = new SentenceSplitter();
@@ -314,6 +404,7 @@ export function JarvisView({
             first = false;
             setLatency(Math.round(performance.now() - started));
             setThinking(false);
+            thinkingRef.current = false;
           }
           answer += token;
           for (const sentence of splitter.push(token)) queue.enqueue(sentence);
@@ -337,6 +428,7 @@ export function JarvisView({
         }
       } finally {
         setThinking(false);
+        thinkingRef.current = false;
         busyRef.current = false;
         abortRef.current = null;
       }
@@ -344,94 +436,26 @@ export function JarvisView({
     [log, queue, status],
   );
 
-  const startRecognising = useCallback(() => {
-    const recognizer = createRecognizer();
-    if (!recognizer) return false;
-    recognizerRef.current = recognizer;
-    recognizer.onresult = (event) => {
-      let interim = '';
-      let final = '';
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        const text = result?.[0]?.transcript || '';
-        if (result?.isFinal) final += text;
-        else interim += text;
-      }
-      if (interim.trim()) setPartial(interim.trim());
-      if (final.trim()) {
-        setPartial('');
-        if (queue.busy) {
-          queue.stop();
-          log('Interrupted');
-        }
-        void send(final.trim());
-      }
-    };
-    recognizer.onerror = (event) => {
-      const message = recognitionError(event.error);
-      if (message) setError(message);
-      if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(event.error)) {
-        releaseMic();
-      }
-    };
-    recognizer.onend = () => {
-      if (!listeningRef.current) return;
-      try {
-        recognizer.start();
-      } catch {
-        window.setTimeout(() => {
-          if (listeningRef.current) {
-            try {
-              recognizer.start();
-            } catch {
-              // The browser refused a restart; the next tap retries.
-            }
-          }
-        }, 400);
-      }
-    };
-    try {
-      recognizer.start();
-      return true;
-    } catch {
-      return false;
-    }
-  }, [log, queue, releaseMic, send]);
+  useEffect(() => {
+    sendRef.current = send;
+  }, [send]);
 
-  const startRecordingFallback = useCallback(() => {
-    const stream = streamRef.current;
-    if (!stream || typeof MediaRecorder === 'undefined') {
-      setError('This browser cannot record audio.');
-      return;
-    }
-    const recorder = new MediaRecorder(stream);
-    chunksRef.current = [];
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunksRef.current.push(event.data);
-    };
-    recorder.onstop = () => {
-      const blob = new Blob(chunksRef.current, {
-        type: recorder.mimeType || 'audio/webm',
-      });
-      chunksRef.current = [];
-      setRecording(false);
-      if (!blob.size) return;
-      void transcribeAudio(blob, 'voice.webm')
-        .then((text) => {
-          if (text) void send(text);
-          else setError('Did not catch that — tap the core and speak again.');
-        })
-        .catch((err: unknown) => {
-          setError(err instanceof ApiError ? err.message : 'Could not transcribe that.');
-        });
-    };
-    recorder.start();
-    recorderRef.current = recorder;
-    setRecording(true);
-    log('Recording');
-  }, [log, send]);
+  const releaseMic = useCallback(() => {
+    recognizerRef.current?.abort();
+    recognizerRef.current = null;
+    meterRef.current?.dispose();
+    meterRef.current = null;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    const recorder = recorderRef.current;
+    recorderRef.current = null;
+    if (recorder && recorder.state === 'recording') recorder.stop();
+    setListening(false);
+    setRecording(false);
+    setPartial('');
+  }, []);
 
-  const startListening = useCallback(async () => {
+  const startConversation = useCallback(async () => {
     if (!status?.configured) {
       setError('Connect an AI model in Settings before talking to Jarvis.');
       return;
@@ -441,7 +465,9 @@ export function JarvisView({
       return;
     }
     setError('');
-    if (queue.busy) queue.stop();
+    // Unlock playback inside this tap: the first reply arrives later, and iOS
+    // will not start audio outside a user gesture.
+    queue.prime();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
@@ -454,49 +480,71 @@ export function JarvisView({
       setError('Microphone access was denied. Allow it for this site, then tap the core.');
       return;
     }
-    listeningRef.current = true;
+    conversationRef.current = true;
+    setConversation(true);
     setListening(true);
     log('Microphone live');
     if (!startRecognising()) startRecordingFallback();
-  }, [log, queue, startRecordingFallback, startRecognising, status]);
+  }, [log, queue, startRecognising, startRecordingFallback, status]);
 
-  const stopListening = useCallback(() => {
-    const recorder = recorderRef.current;
-    recorderRef.current = null;
-    if (recorder && recorder.state === 'recording') {
-      // Stopping the fallback recorder transcribes what was captured.
-      listeningRef.current = false;
-      recognizerRef.current = null;
-      meterRef.current?.dispose();
-      meterRef.current = null;
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-      setListening(false);
-      setPartial('');
-      recorder.stop();
-      return;
-    }
+  const endConversation = useCallback(() => {
+    conversationRef.current = false;
+    setConversation(false);
+    queue.stop();
+    abortRef.current?.abort();
     releaseMic();
-    log('Microphone off');
-  }, [log, releaseMic]);
+    log('Conversation ended');
+  }, [log, queue, releaseMic]);
 
   const toggleMic = useCallback(() => {
-    if (recording) {
-      stopListening();
+    if (speaking) {
+      // Interrupt the reply but stay in the conversation.
+      queue.stop();
+      window.setTimeout(() => ensureListening(), 0);
+      log('Interrupted');
       return;
     }
-    if (listening) {
-      stopListening();
+    if (conversation) {
+      endConversation();
       return;
     }
-    void startListening();
-  }, [listening, recording, startListening, stopListening]);
+    void startConversation();
+  }, [conversation, endConversation, ensureListening, log, queue, speaking, startConversation]);
+
+  // Speaking stops the recogniser (so Jarvis never transcribes himself),
+  // watches the microphone for a barge-in, and hands back to listening the
+  // moment the reply ends.
+  useEffect(() => {
+    speakingRef.current = speaking;
+    thinkingRef.current = thinking;
+    if (!conversation) return;
+    if (speaking) {
+      recognizerRef.current?.abort();
+      let hits = 0;
+      const watch = window.setInterval(() => {
+        const level = meterRef.current?.read() ?? 0;
+        if (level > BARGE_IN_LEVEL) {
+          hits += 1;
+          if (hits >= BARGE_IN_TICKS) {
+            window.clearInterval(watch);
+            queue.stop();
+            log('Interrupted');
+            window.setTimeout(() => ensureListening(), 0);
+          }
+        } else {
+          hits = 0;
+        }
+      }, 90);
+      return () => window.clearInterval(watch);
+    }
+    if (!thinking) ensureListening();
+  }, [speaking, thinking, conversation, ensureListening, log, queue]);
 
   const readLevel = useCallback(() => {
     if (speaking) return queue.readLevel();
-    if (listening) return meterRef.current?.read() ?? 0;
+    if (conversation) return meterRef.current?.read() ?? 0;
     return 0;
-  }, [listening, queue, speaking]);
+  }, [conversation, queue, speaking]);
 
   const turns = transcript.filter((message) => message.role === 'user').length;
   const lastUser = [...transcript].reverse().find((message) => message.role === 'user');
@@ -510,6 +558,11 @@ export function JarvisView({
     : configured
       ? 'Ready for input...'
       : 'No AI core connected.';
+  const micLabel = speaking
+    ? 'TAP TO INTERRUPT'
+    : conversation
+      ? 'TAP TO END CONVERSATION'
+      : 'TAP TO TALK';
 
   return (
     <div className={`hud hud-${mode}`}>
@@ -568,7 +621,7 @@ export function JarvisView({
             <p className="core-line">
               {partial ||
                 lastReply?.content ||
-                (listening ? 'Listening for your voice…' : 'Tap the core and speak.')}
+                (conversation ? 'Listening for your voice…' : 'Tap the core and speak.')}
             </p>
           </div>
           <Waveform readLevel={readLevel} active={mode !== 'idle'} className="wave-core" />
@@ -636,23 +689,17 @@ export function JarvisView({
         <div className="hud-mic-wrap">
           <button
             type="button"
-            className={`hud-mic ${listening || recording ? 'is-live' : ''} ${
+            className={`hud-mic ${conversation ? 'is-live' : ''} ${
               speaking ? 'is-speaking' : ''
             }`}
             onClick={toggleMic}
-            aria-label={listening || recording ? 'Stop listening' : 'Start listening'}
-            aria-pressed={listening || recording}
+            aria-label={conversation ? 'End the conversation' : 'Start talking'}
+            aria-pressed={conversation}
           >
             <span className="mic-ring" aria-hidden="true" />
             <MicGlyph />
           </button>
-          <p className="hud-mic-label">
-            {speaking
-              ? 'TAP TO INTERRUPT'
-              : listening || recording
-                ? 'TAP TO STOP'
-                : 'TAP TO SPEAK'}
-          </p>
+          <p className="hud-mic-label">{micLabel}</p>
         </div>
       </main>
 

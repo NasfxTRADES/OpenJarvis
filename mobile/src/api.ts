@@ -157,11 +157,11 @@ export function fetchRuns(id: string): Promise<{ runs: TaskRun[] }> {
 }
 
 /** Turn a reply into audio with the server's configured voice. */
-export async function synthesize(text: string): Promise<Blob> {
+export async function synthesize(text: string, speed = 1.12): Promise<Blob> {
   const response = await fetch('/v1/mobile/speech', {
     method: 'POST',
     headers: headers({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, speed }),
   });
   if (response.status === 401) {
     throw new ApiError(401, 'This phone is not paired with the server.');
