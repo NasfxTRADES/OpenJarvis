@@ -46,7 +46,7 @@ const SILENT_WAV =
   'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAIA+AAABAAgAZGF0YQAAAAA=';
 
 /** Slightly quicker than natural speech, which is how Jarvis should read. */
-export const SPEECH_SPEED = 1.12;
+export const SPEECH_SPEED = 1.2;
 
 function recognizerCtor(): RecognizerCtor | null {
   if (typeof window === 'undefined') return null;

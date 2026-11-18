@@ -94,7 +94,7 @@ def test_speech_returns_audio_from_the_voice_backend(
             "text": "Good evening, operator.",
             "voice_id": "",
             "format": "mp3",
-            "speed": 1.12,
+            "speed": 1.2,
         }
     ]
 

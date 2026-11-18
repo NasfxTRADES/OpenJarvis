@@ -11,8 +11,10 @@ from openjarvis.core.types import Message, Role
 from openjarvis.engine._base import EngineConnectionError
 from openjarvis.engine._stubs import InferenceEngine
 from openjarvis.engine.failover import (
+    PREFERRED_MODELS,
     FailoverEngine,
     ProviderSlot,
+    _order_by_preference,
     is_quota_error,
 )
 
@@ -205,10 +207,86 @@ def test_is_quota_error_matches_vendor_wordings() -> None:
     assert is_quota_error(Exception("Error code: 429 - rate limit reached"))
     assert is_quota_error(Exception("RESOURCE_EXHAUSTED: quota exceeded"))
     assert is_quota_error(Exception("You exceeded your current quota, check your plan"))
+    # Anthropic words an empty balance like this; without the marker the chain
+    # retries it every minute, in front of every reply.
+    assert is_quota_error(
+        Exception(
+            "Error code: 400 - {'error': {'message': 'Your credit balance is too "
+            "low to access the Anthropic API.'}}"
+        )
+    )
     assert not is_quota_error(Exception("Invalid API key provided"))
     assert not is_quota_error(
         EngineConnectionError("maximum context length exceeded for this model")
     )
+
+
+def test_retired_models_are_rested_instead_of_retried() -> None:
+    retired = FakeEngine(
+        error=Exception(
+            "404 NOT_FOUND. This model models/gemini-2.5-flash is no longer "
+            "available to new users."
+        )
+    )
+    live = FakeEngine(content="from-3.8")
+    engine = FailoverEngine(
+        [
+            ProviderSlot(
+                "gemini", "Google Gemini", retired, "google/gemini-2.5-flash"
+            ),
+            ProviderSlot(
+                "gemini", "Google Gemini", live, "google/gemini-3.8-flash"
+            ),
+        ]
+    )
+    assert engine.generate(MESSAGES, model="")["content"] == "from-3.8"
+
+    status = {entry["model"]: entry for entry in engine.describe()}
+    # Hours, not the one-minute cooldown a normal error gets: a retired model
+    # can never answer, and trying it first again would slow every turn down.
+    assert status["google/gemini-2.5-flash"]["cooldown_seconds"] >= 5 * 3600
+
+
+def test_retired_model_adopts_the_replacement_google_names() -> None:
+    retired = FakeEngine(
+        error=Exception(
+            "404 NOT_FOUND. This model models/gemini-2.5-flash is no longer "
+            "available to new users. Please update your code to use "
+            "models/gemini-3.8-flash for the latest features."
+        )
+    )
+    spare = FakeEngine(content="spare")
+    engine = FailoverEngine(
+        [
+            ProviderSlot(
+                "gemini", "Google Gemini", retired, "google/gemini-2.5-flash"
+            ),
+            ProviderSlot("gemini", "Google Gemini", spare, "google/gemini-3-flash"),
+        ]
+    )
+    engine.generate(MESSAGES, model="")
+
+    assert engine.slots[0].model == "google/gemini-3.8-flash"
+    assert engine.slots[0].model != engine.slots[1].model
+
+
+def test_gemini_preference_starts_with_the_current_flash_model() -> None:
+    preferred = PREFERRED_MODELS["gemini"]
+    assert preferred[0] == "google/gemini-3.8-flash"
+    assert len(set(preferred)) == len(preferred)
+
+
+def test_discovered_models_are_reordered_and_deduped() -> None:
+    found = [
+        "google/gemini-2.5-flash",
+        "google/gemini-3.8-flash",
+        "google/gemini-3.5-flash-lite",
+        "google/gemini-2.5-flash",
+    ]
+    ordered = _order_by_preference(found, PREFERRED_MODELS["gemini"])
+
+    assert ordered[0] == "google/gemini-3.8-flash"
+    assert ordered.count("google/gemini-2.5-flash") == 1
 
 
 def test_model_ids_and_providers_dedupe() -> None:

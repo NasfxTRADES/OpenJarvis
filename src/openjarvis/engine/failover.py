@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from collections.abc import AsyncIterator, Sequence
@@ -69,8 +70,11 @@ PREFERRED_MODELS: Dict[str, tuple[str, ...]] = {
         "cerebras/qwen-3-235b-a22b-instruct-2507",
     ),
     "gemini": (
-        "google/gemini-2.5-flash",
-        "google/gemini-3.5-flash-lite",
+        # Google retires Flash models for new keys without removing them from
+        # the catalogue, and the 404 names the replacement. 3.8 Flash is the
+        # current default; the older ones stay as last resorts.
+        "google/gemini-3.8-flash",
+        "google/gemini-3-flash",
         "google/gemini-2.5-flash",
     ),
     "mistral": (
@@ -138,6 +142,24 @@ _QUOTA_MARKERS = (
     "daily limit",
     "tokens per day",
     "requests per day",
+    "credit balance",
+    "purchase credits",
+)
+
+# A model that no longer exists fails on every request, so retrying it every
+# minute only adds a dead round trip in front of every reply. Google retires
+# models regularly; park the slot for hours instead.
+_MODEL_RETIRED_MARKERS = (
+    "no longer available",
+    "model not found",
+    "model_not_found",
+    "does not exist",
+    "unsupported model",
+    "not supported for generatecontent",
+)
+_MODEL_RETIRED_COOLDOWN = 6 * 3600.0
+_SUGGESTED_MODEL_RE = re.compile(
+    r"use (?:the )?models?/([A-Za-z0-9][A-Za-z0-9._-]*)", re.IGNORECASE
 )
 
 def _error_text(exc: BaseException) -> str:
@@ -157,6 +179,23 @@ def _error_text(exc: BaseException) -> str:
         except Exception:  # pragma: no cover - response may not expose text
             pass
     return " ".join(parts).lower()
+
+
+def is_retired_model_error(exc: BaseException) -> bool:
+    """True when the provider says this exact model id is gone.
+
+    Gemini answers ``404 NOT_FOUND`` with "This model ... is no longer
+    available to new users" and names the replacement. Treating that as a
+    normal outage makes every turn pay for a model that can never answer.
+    """
+    text = _error_text(exc)
+    return any(marker in text for marker in _MODEL_RETIRED_MARKERS)
+
+
+def suggested_model(exc: BaseException) -> str:
+    """The replacement the provider named in its error, if it named one."""
+    match = _SUGGESTED_MODEL_RE.search(str(exc))
+    return match.group(1) if match else ""
 
 
 def is_quota_error(exc: BaseException) -> bool:
@@ -291,10 +330,47 @@ class FailoverEngine(InferenceEngine):
         cooling.sort(key=lambda index: self._states[index].cooldown_until)
         return ready + cooling
 
+    def _adopt_suggested_model(self, index: int, exc: BaseException) -> bool:
+        """Swap a retired Gemini model for the one Google recommends.
+
+        The 404 body names the replacement, so the chain can heal itself
+        instead of waiting for a code update. The successor is live, so the
+        slot is left ready rather than cooling.
+        """
+        slot = self._slots[index]
+        if slot.provider != "gemini":
+            return False
+        replacement = suggested_model(exc)
+        if not replacement:
+            return False
+        target = f"google/{replacement}"
+        if any(item.model == target for item in self._slots):
+            return False
+        previous = slot.model
+        slot.model = target
+        logger.warning(
+            "%s retired %s; switching that slot to %s",
+            slot.label,
+            previous,
+            target,
+        )
+        return True
+
     def _record_failure(self, index: int, exc: BaseException) -> None:
         state = self._states[index]
         quota = is_quota_error(exc)
-        delay = self.quota_cooldown_seconds if quota else self.cooldown_seconds
+        retired = is_retired_model_error(exc)
+        if retired and self._adopt_suggested_model(index, exc):
+            state.cooldown_until = 0.0
+            state.last_error = ""
+            state.failures += 1
+            return
+        if quota:
+            delay = self.quota_cooldown_seconds
+        elif retired:
+            delay = _MODEL_RETIRED_COOLDOWN
+        else:
+            delay = self.cooldown_seconds
         state.cooldown_until = time.time() + delay
         state.last_error = str(exc)[:400]
         state.failures += 1
@@ -313,6 +389,13 @@ class FailoverEngine(InferenceEngine):
                 self._slots[index].model,
                 str(exc)[:200],
             )
+            if retired:
+                logger.warning(
+                    "%s (%s) is retired; resting it for %d hours",
+                    self._slots[index].label,
+                    self._slots[index].model,
+                    int(delay // 3600),
+                )
 
     def _record_success(self, index: int) -> None:
         state = self._states[index]
@@ -562,10 +645,21 @@ def _http_model_ids(url: str, key: str, provider: str) -> List[str]:
     return ids
 
 
+def _dedupe(models: Sequence[str]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for model in models:
+        if model and model not in seen:
+            seen.add(model)
+            out.append(model)
+    return out
+
+
 def _order_by_preference(found: Sequence[str], preferred: Sequence[str]) -> List[str]:
     """Put preferred models first, then anything else the provider offers."""
-    ordered = [m for m in preferred if m in found]
-    ordered.extend(m for m in found if m not in ordered and m not in preferred)
+    available = _dedupe(found)
+    ordered = [m for m in _dedupe(preferred) if m in available]
+    ordered.extend(m for m in available if m not in ordered)
     return ordered
 
 
@@ -715,7 +809,7 @@ def build_free_failover_engine(
             logger.debug("Discovery failed for %s: %s", provider, exc)
             models = list(PREFERRED_MODELS[provider])
         added = 0
-        for model in models:
+        for model in _dedupe(models):
             if added >= max_models_per_provider:
                 break
             if not engine.can_serve(model):

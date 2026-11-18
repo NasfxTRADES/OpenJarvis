@@ -157,7 +157,7 @@ export function fetchRuns(id: string): Promise<{ runs: TaskRun[] }> {
 }
 
 /** Mint a short-lived URL an <audio> element can stream from. */
-export async function speechUrl(text: string, speed = 1.12): Promise<string> {
+export async function speechUrl(text: string, speed = 1.2): Promise<string> {
   const data = await request<{ url: string }>('/v1/mobile/speech/url', {
     method: 'POST',
     body: JSON.stringify({ text, speed }),
@@ -229,7 +229,7 @@ export async function* streamVoice(
 }
 
 /** Turn a reply into audio with the server's configured voice. */
-export async function synthesize(text: string, speed = 1.12): Promise<Blob> {
+export async function synthesize(text: string, speed = 1.2): Promise<Blob> {
   const response = await fetch('/v1/mobile/speech', {
     method: 'POST',
     headers: headers({ 'Content-Type': 'application/json' }),

@@ -1018,16 +1018,16 @@ _SPEECH_TICKET_MAX = 96
 class MobileSpeechUrlRequest(BaseModel):
     text: str
     voice_id: str = ""
-    speed: float = 1.12
+    # A spoken reply reads a little quicker than a document would; the phone
+    # asks for that explicitly instead of the server guessing.
+    speed: float = 1.2
 
 
 class MobileSpeechRequest(BaseModel):
     text: str
     voice_id: str = ""
     format: str = "mp3"
-    # Spoken replies read a little quicker than a document would; the client
-    # asks for that explicitly instead of the server guessing.
-    speed: float = 1.12
+    speed: float = 1.2
 
 
 def _runtime(request: Request) -> MobileRuntime:
@@ -1087,8 +1087,13 @@ async def mobile_reply(
                 if token:
                     yield sse(token)
         except Exception as exc:  # noqa: BLE001 - report, never hang the turn
+            # The full provider text goes to the log, not into Jarvis's mouth:
+            # a 404 dump can be hundreds of characters read aloud.
             logger.warning("Voice reply failed: %s", exc)
-            yield sse(f"I could not reach a model just now: {exc}")
+            yield sse(
+                "I could not reach a model just now, sir. "
+                "The server needs a working AI provider key."
+            )
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

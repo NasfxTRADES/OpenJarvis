@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Sequence
@@ -252,21 +253,55 @@ def _google_model_id(model: str) -> str:
     return name or model
 
 
-def _google_thinking_config(model: str, genai_types: Any, *, budget: int = 0) -> Any:
-    """Turn Gemini's reasoning off so a spoken reply starts immediately.
+def _google_major_version(model: str) -> int:
+    match = re.search(r"gemini-(\d+)", _google_model_id(model).lower())
+    return int(match.group(1)) if match else 0
 
-    Gemini 2.5/3 Flash models think before answering unless told not to, which
-    puts whole seconds of silence in front of the first spoken word. Only the
-    Flash family accepts a zero budget, and the setting does not exist on 2.0
-    or older models, so anything else keeps the SDK default.
+
+def _google_is_v3(model: str) -> bool:
+    """True for Gemini 3 and later, which changed the request shape."""
+    return _google_major_version(model) >= 3
+
+
+def _google_thinking_config(model: str, genai_types: Any, *, budget: int = 0) -> Any:
+    """Ask Gemini to think as little as it allows, so speech starts quickly.
+
+    Flash models reason before answering unless told otherwise, which puts
+    whole seconds of silence in front of the first spoken word. Gemini 3 moved
+    from a token budget to a level and rejects the old field, so the two
+    families get different knobs; 2.0 and older have neither and keep the SDK
+    default.
     """
     name = _google_model_id(model).lower()
-    if "flash" not in name or not ("2.5" in name or "3" in name):
+    if "flash" not in name:
         return None
     try:
-        return genai_types.ThinkingConfig(thinking_budget=budget)
+        if _google_is_v3(name):
+            # 3.8 Flash supports low/medium/high only; "minimal" errors.
+            return genai_types.ThinkingConfig(thinking_level="low")
+        if _google_major_version(name) == 2 and "2.5" in name:
+            return genai_types.ThinkingConfig(thinking_budget=budget)
     except (AttributeError, TypeError, ValueError):
         return None
+    return None
+
+
+def _google_config(
+    model: str, genai_types: Any, *, temperature: float, max_tokens: int
+) -> Any:
+    """Build a request config the target Gemini accepts.
+
+    Gemini 3 deprecated the sampling parameters, and sending ``temperature``
+    there is one of the intermittent ``400 INVALID_ARGUMENT`` causes.
+    """
+    kwargs: Dict[str, Any] = {"max_output_tokens": max_tokens}
+    if not _google_is_v3(model):
+        kwargs["temperature"] = temperature
+    config = genai_types.GenerateContentConfig(**kwargs)
+    thinking = _google_thinking_config(model, genai_types)
+    if thinking is not None:
+        config.thinking_config = thinking
+    return config
 
 
 def _is_google_model(model: str) -> bool:
@@ -1086,13 +1121,9 @@ class CloudEngine(InferenceEngine):
 
         from google.genai import types as genai_types
 
-        config = genai_types.GenerateContentConfig(
-            temperature=temperature,
-            max_output_tokens=max_tokens,
+        config = _google_config(
+            model, genai_types, temperature=temperature, max_tokens=max_tokens
         )
-        thinking = _google_thinking_config(model, genai_types)
-        if thinking is not None:
-            config.thinking_config = thinking
         if system_text:
             config.system_instruction = system_text
 
@@ -1813,13 +1844,9 @@ class CloudEngine(InferenceEngine):
 
         from google.genai import types as genai_types
 
-        config = genai_types.GenerateContentConfig(
-            temperature=temperature,
-            max_output_tokens=max_tokens,
+        config = _google_config(
+            model, genai_types, temperature=temperature, max_tokens=max_tokens
         )
-        thinking = _google_thinking_config(model, genai_types)
-        if thinking is not None:
-            config.thinking_config = thinking
         if system_text:
             config.system_instruction = system_text
 
@@ -1894,13 +1921,9 @@ class CloudEngine(InferenceEngine):
 
         from google.genai import types as genai_types
 
-        config = genai_types.GenerateContentConfig(
-            temperature=temperature,
-            max_output_tokens=max_tokens,
+        config = _google_config(
+            model, genai_types, temperature=temperature, max_tokens=max_tokens
         )
-        thinking = _google_thinking_config(model, genai_types)
-        if thinking is not None:
-            config.thinking_config = thinking
         if system_text:
             config.system_instruction = system_text
 
