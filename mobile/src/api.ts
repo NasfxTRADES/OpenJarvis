@@ -15,7 +15,9 @@ export class ApiError extends Error {
 // seconds-long window, not a failed turn, so a request waits it out instead of
 // putting "Chat failed (502)" in front of the operator.
 const GATEWAY_STATUS = new Set([502, 503, 504]);
-const GATEWAY_RETRY_DELAYS = [700, 1500, 3000, 4000];
+// A free Render instance takes 30–60s to wake. Waiting it out on the API side
+// is the difference between "Jarvis is starting" and "Chat failed (502)".
+const GATEWAY_RETRY_DELAYS = [1000, 2000, 3000, 5000, 8000, 12000, 15000];
 
 function pause(ms: number, signal?: AbortSignal | null): Promise<void> {
   return new Promise((resolve, reject) => {

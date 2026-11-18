@@ -168,11 +168,26 @@ def _extract_retry_after(exc: BaseException) -> Optional[float]:
     return None
 
 
+# An account with no balance stays empty for as long as it takes a human to
+# add credits. Retrying it is pure delay — and because the retry sleeps on the
+# request thread, a voice turn used to hold the server's event loop long enough
+# for the platform health check to time out and restart the whole instance.
+_PERMANENT_MARKERS = (
+    "no credits remaining",
+    "add credits",
+    "insufficient_quota",
+    "exceeded your current quota",
+)
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """Whether to retry this OpenAI exception class."""
     try:
         import openai
     except ImportError:
+        return False
+    text = str(exc).lower()
+    if any(marker in text for marker in _PERMANENT_MARKERS):
         return False
     if isinstance(
         exc,

@@ -1848,8 +1848,13 @@ class CloudEngine(InferenceEngine):
         }
         if not _is_openai_reasoning_model(model):
             create_kwargs["temperature"] = temperature
-        resp = _chat_completion_with_temperature_retry(
-            self._openai_client, create_kwargs
+        # The SDK call (and any retry wrapper around it) is synchronous. Run it
+        # in a worker thread so a provider that stalls cannot freeze the event
+        # loop, /health, or every other phone request behind it.
+        resp = await asyncio.to_thread(
+            _chat_completion_with_temperature_retry,
+            self._openai_client,
+            create_kwargs,
         )
         async for chunk in _iterate_off_loop(resp):
             delta = chunk.choices[0].delta if chunk.choices else None

@@ -187,7 +187,13 @@ async def test_stream_uses_the_healthy_provider_after_switch() -> None:
     assert "".join(chunks) == "hello"
 
 
-def test_previous_provider_returns_after_cooldown() -> None:
+def test_last_good_provider_stays_in_front() -> None:
+    """After one failover, replies keep using the provider that answered.
+
+    Free tiers refuse in bursts. Re-probing the failed provider in front of
+    every turn is the silence that made voice replies feel slow, so the chain
+    sticks to the slot that last produced an answer until it fails too.
+    """
     first = FakeEngine(error=Exception("429 rate limit"))
     second = FakeEngine(content="second")
     engine = FailoverEngine(
@@ -197,9 +203,24 @@ def test_previous_provider_returns_after_cooldown() -> None:
         ],
         quota_cooldown_seconds=0,
     )
-    engine.generate(MESSAGES, model="")
+    assert engine.generate(MESSAGES, model="")["content"] == "second"
     first.error = None
     first.content = "back-on-groq"
+    assert engine.generate(MESSAGES, model="")["content"] == "second"
+
+
+def test_chain_returns_to_the_first_provider_when_the_last_good_fails() -> None:
+    first = FakeEngine(content="back-on-groq")
+    second = FakeEngine(content="second")
+    engine = FailoverEngine(
+        [
+            ProviderSlot("groq", "Groq", first, "groq/m1"),
+            ProviderSlot("gemini", "Google Gemini", second, "google/m2"),
+        ],
+        quota_cooldown_seconds=0,
+    )
+    assert engine.generate(MESSAGES, model="")["content"] == "back-on-groq"
+    second.error = Exception("503 UNAVAILABLE")
     assert engine.generate(MESSAGES, model="")["content"] == "back-on-groq"
 
 

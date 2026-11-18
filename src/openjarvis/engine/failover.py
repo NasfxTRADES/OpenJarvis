@@ -145,6 +145,8 @@ _QUOTA_MARKERS = (
     "requests per day",
     "credit balance",
     "purchase credits",
+    "no credits remaining",
+    "add credits",
 )
 
 # A model that no longer exists fails on every request, so retrying it every
@@ -256,6 +258,11 @@ class FailoverEngine(InferenceEngine):
         self.quota_cooldown_seconds = quota_cooldown_seconds
         self.switches = 0
         self.last_provider = ""
+        # Staying on the provider that last answered is what makes replies feel
+        # instant after one provider starts refusing: free models answer 503
+        # for minutes at a time, and re-probing them every turn adds seconds of
+        # silence in front of every single answer.
+        self._last_good: Optional[int] = None
         # A provider that accepts the connection and then says nothing must not
         # hold a voice turn hostage: bound the wait for the first token and let
         # the next provider answer. The default is generous enough for a slow
@@ -340,6 +347,13 @@ class FailoverEngine(InferenceEngine):
                 if self._slots[index].model == requested_model
             ]
             ready = exact + [index for index in ready if index not in exact]
+        # The last provider that actually answered wins, even over the model
+        # the caller named: the chain serves each slot's own model anyway, so
+        # "the requested model" only ever means "try the default again".
+        if self._last_good is not None and self._last_good in ready:
+            ready = [self._last_good] + [
+                index for index in ready if index != self._last_good
+            ]
         cooling = [index for index in range(len(self._slots)) if index not in ready]
         cooling.sort(key=lambda index: self._states[index].cooldown_until)
         return ready + cooling
@@ -413,6 +427,7 @@ class FailoverEngine(InferenceEngine):
 
     def _record_success(self, index: int) -> None:
         state = self._states[index]
+        self._last_good = index
         state.cooldown_until = 0.0
         state.last_error = ""
         state.failures = 0
