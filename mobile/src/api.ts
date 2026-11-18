@@ -11,6 +11,50 @@ export class ApiError extends Error {
   }
 }
 
+// A free Render instance answers 502 while it restarts or wakes up. That is a
+// seconds-long window, not a failed turn, so a request waits it out instead of
+// putting "Chat failed (502)" in front of the operator.
+const GATEWAY_STATUS = new Set([502, 503, 504]);
+const GATEWAY_RETRY_DELAYS = [700, 1500, 3000, 4000];
+
+function pause(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** Fetch, retrying the statuses a restarting server returns. */
+async function fetchAwake(url: string, init: RequestInit): Promise<Response> {
+  for (let attempt = 0; ; attempt += 1) {
+    const last = attempt >= GATEWAY_RETRY_DELAYS.length;
+    try {
+      const response = await fetch(url, init);
+      if (!GATEWAY_STATUS.has(response.status) || last) return response;
+    } catch (error) {
+      if (last || (error as Error)?.name === 'AbortError') throw error;
+    }
+    await pause(GATEWAY_RETRY_DELAYS[attempt], init.signal);
+  }
+}
+
+function chatFailure(status: number): string {
+  return GATEWAY_STATUS.has(status)
+    ? 'Jarvis is starting up — the server was restarting. Try again in a moment.'
+    : `Chat failed (${status})`;
+}
+
 export interface VoiceStatus {
   available: boolean;
   backend: string;
@@ -206,7 +250,7 @@ export async function* streamVoice(
   messages: ChatMessage[],
   signal?: AbortSignal,
 ): AsyncGenerator<string> {
-  const response = await fetch('/v1/mobile/reply', {
+  const response = await fetchAwake('/v1/mobile/reply', {
     method: 'POST',
     headers: headers({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ messages, max_tokens: 320 }),
@@ -216,7 +260,7 @@ export async function* streamVoice(
     throw new ApiError(401, 'This phone is not paired with the server.');
   }
   if (!response.ok || !response.body) {
-    let detail = `Chat failed (${response.status})`;
+    let detail = chatFailure(response.status);
     try {
       const body = await response.json();
       if (body?.detail) detail = String(body.detail);
@@ -286,7 +330,7 @@ export async function* streamChat(
   messages: ChatMessage[],
   signal?: AbortSignal,
 ): AsyncGenerator<string> {
-  const response = await fetch('/v1/chat/completions', {
+  const response = await fetchAwake('/v1/chat/completions', {
     method: 'POST',
     headers: headers({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ model, messages, stream: true }),
@@ -296,7 +340,7 @@ export async function* streamChat(
     throw new ApiError(401, 'This phone is not paired with the server.');
   }
   if (!response.ok || !response.body) {
-    let detail = `Chat failed (${response.status})`;
+    let detail = chatFailure(response.status);
     try {
       const body = await response.json();
       if (body?.detail) detail = String(body.detail);

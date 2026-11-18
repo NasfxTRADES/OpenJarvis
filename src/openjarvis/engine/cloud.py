@@ -5,6 +5,8 @@ OpenAI, Anthropic, Google, MiniMax, DeepSeek, and Atlas Cloud API backends.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 import os
@@ -26,6 +28,65 @@ from openjarvis.engine._base import (
 from openjarvis.engine._stubs import StreamChunk
 
 logger = logging.getLogger(__name__)
+
+_STREAM_END = object()
+
+
+def _next_or_end(iterator: Any) -> Any:
+    """``next()`` that reports the end without raising across a thread boundary."""
+    try:
+        return next(iterator)
+    except StopIteration:
+        return _STREAM_END
+
+
+async def _iterate_off_loop(iterable: Any) -> AsyncIterator[Any]:
+    """Drain a blocking SDK stream without parking the event loop.
+
+    The OpenAI, Anthropic and google-genai clients stream synchronously. A plain
+    ``for`` over one of those inside an async generator holds the whole event
+    loop until the provider closes the socket: ``/health`` stops answering,
+    Render decides the instance is unhealthy and restarts it, and every phone
+    request in that window gets a 502. Pulling each item in a worker thread
+    keeps the loop free between chunks.
+    """
+    iterator = iter(iterable)
+    while True:
+        item = await asyncio.to_thread(_next_or_end, iterator)
+        if item is _STREAM_END:
+            return
+        yield item
+
+
+async def _google_chunks(
+    client: Any,
+    *,
+    model: str,
+    contents: Any,
+    config: Any,
+    aio_models: Any = None,
+) -> AsyncIterator[Any]:
+    """Stream Gemini chunks, preferring the SDK's native async client.
+
+    ``aio_models`` is the real client's ``aio.models`` surface, captured when the
+    engine built it. It stays unset for test doubles and wrappers, which then use
+    the threaded sync path.
+    """
+    if aio_models is not None:
+        result = aio_models.generate_content_stream(
+            model=model, contents=contents, config=config
+        )
+        if inspect.isawaitable(result):
+            result = await result
+        async for chunk in result:
+            yield chunk
+        return
+    async for chunk in _iterate_off_loop(
+        client.models.generate_content_stream(
+            model=model, contents=contents, config=config
+        )
+    ):
+        yield chunk
 
 # Pricing per million tokens (input, output)
 PRICING: Dict[str, tuple[float, float]] = {
@@ -545,6 +606,9 @@ class CloudEngine(InferenceEngine):
         self._cerebras_client: Any = None
         self._mistral_client: Any = None
         self._codex_client: Any = None
+        # Gemini's async stream surface, kept beside the sync client so a
+        # provider response never blocks the server's event loop.
+        self._google_aio_models: Any = None
         # Gemini thought_signatures: tool_call_id -> signature bytes
         self._thought_sigs: Dict[str, bytes] = {}
         self._init_clients()
@@ -577,6 +641,9 @@ class CloudEngine(InferenceEngine):
                 self._google_client = genai.Client(
                     api_key=gemini_key,
                     http_options={"base_url": google_base} if google_base else None,
+                )
+                self._google_aio_models = getattr(
+                    getattr(self._google_client, "aio", None), "models", None
                 )
             except ImportError:
                 pass
@@ -1784,7 +1851,7 @@ class CloudEngine(InferenceEngine):
         resp = _chat_completion_with_temperature_retry(
             self._openai_client, create_kwargs
         )
-        for chunk in resp:
+        async for chunk in _iterate_off_loop(resp):
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 yield delta.content
@@ -1818,7 +1885,7 @@ class CloudEngine(InferenceEngine):
         if system_text:
             create_kwargs["system"] = system_text
         with self._anthropic_client.messages.stream(**create_kwargs) as stream:
-            for text in stream.text_stream:
+            async for text in _iterate_off_loop(stream.text_stream):
                 yield text
 
     async def _stream_google(
@@ -1850,10 +1917,12 @@ class CloudEngine(InferenceEngine):
         if system_text:
             config.system_instruction = system_text
 
-        for chunk in self._google_client.models.generate_content_stream(
+        async for chunk in _google_chunks(
+            self._google_client,
             model=_google_model_id(model),
             contents=contents,
             config=config,
+            aio_models=getattr(self, "_google_aio_models", None),
         ):
             if chunk.text:
                 yield chunk.text
@@ -1934,10 +2003,12 @@ class CloudEngine(InferenceEngine):
         tool_call_count = 0
         stream_id = uuid.uuid4().hex
         final_usage: Dict[str, Any] | None = None
-        for chunk in self._google_client.models.generate_content_stream(
+        async for chunk in _google_chunks(
+            self._google_client,
             model=_google_model_id(model),
             contents=contents,
             config=config,
+            aio_models=getattr(self, "_google_aio_models", None),
         ):
             usage_metadata = getattr(chunk, "usage_metadata", None)
             if usage_metadata is not None:
@@ -2040,7 +2111,7 @@ class CloudEngine(InferenceEngine):
         resp = _chat_completion_with_temperature_retry(
             self._openrouter_client, create_kwargs
         )
-        for chunk in resp:
+        async for chunk in _iterate_off_loop(resp):
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 yield delta.content
@@ -2074,7 +2145,7 @@ class CloudEngine(InferenceEngine):
         resp = _chat_completion_with_temperature_retry(
             self._atlascloud_client, create_kwargs
         )
-        for chunk in resp:
+        async for chunk in _iterate_off_loop(resp):
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 yield delta.content
@@ -2102,7 +2173,7 @@ class CloudEngine(InferenceEngine):
         resp = _chat_completion_with_temperature_retry(
             self._minimax_client, create_kwargs
         )
-        for chunk in resp:
+        async for chunk in _iterate_off_loop(resp):
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 yield delta.content
@@ -2128,7 +2199,7 @@ class CloudEngine(InferenceEngine):
         resp = _chat_completion_with_temperature_retry(
             self._deepseek_client, create_kwargs
         )
-        for chunk in resp:
+        async for chunk in _iterate_off_loop(resp):
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 yield delta.content
@@ -2165,7 +2236,7 @@ class CloudEngine(InferenceEngine):
         if tool_choice is not None:
             create_kwargs["tool_choice"] = tool_choice
         resp = _chat_completion_with_temperature_retry(client, create_kwargs)
-        for chunk in resp:
+        async for chunk in _iterate_off_loop(resp):
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 yield delta.content
@@ -2309,7 +2380,7 @@ class CloudEngine(InferenceEngine):
             if not _is_openai_reasoning_model(model):
                 create_kwargs["temperature"] = temperature
         resp = _chat_completion_with_temperature_retry(client, create_kwargs)
-        for chunk in resp:
+        async for chunk in _iterate_off_loop(resp):
             choice = chunk.choices[0] if chunk.choices else None
             if not choice:
                 continue
@@ -2368,7 +2439,7 @@ class CloudEngine(InferenceEngine):
 
         with self._anthropic_client.messages.stream(**create_kwargs) as stream:
             tool_index = -1
-            for event in stream:
+            async for event in _iterate_off_loop(stream):
                 if event.type == "content_block_start":
                     block = event.content_block
                     if block.type == "tool_use":
