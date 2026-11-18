@@ -71,11 +71,15 @@ MOBILE_TOOL_ALLOWLIST: tuple[str, ...] = (
 # entry is OpenRouter's own free-model router, so the default keeps working as
 # individual free models come and go.
 # Gemini's free tier covers the Flash models (per model, per project); Pro and
-# preview models need a billing account, so they are listed after these.
+# preview models need a billing account, so they are listed after these. Older
+# Flash ids are still listed by Google after they stop answering for new keys,
+# so the current model has to come first rather than whatever the catalogue
+# happens to order first.
 GEMINI_MODEL_PREFERENCE: tuple[str, ...] = (
+    "google/gemini-3.8-flash",
+    "google/gemini-3-flash",
     "google/gemini-2.5-flash",
     "google/gemini-2.5-flash-lite",
-    "google/gemini-2.0-flash",
 )
 
 FALLBACK_FREE_MODELS: tuple[str, ...] = (
@@ -605,15 +609,27 @@ class MobileRuntime:
             models = [chosen, *models]
 
         # A key that lists models can still be refused for generation (the
-        # known AQ authorization-key case), so prove it can answer first.
+        # known AQ authorization-key case), and Google keeps listing models it
+        # has retired for new keys. Prove a candidate answers, and keep the
+        # first one that does.
         import asyncio
 
-        ok, reason = await asyncio.to_thread(probe_gemini_generation, key, chosen)
+        ok = False
+        reason = ""
+        for candidate in list(dict.fromkeys([chosen, *models]))[:4]:
+            ok, reason = await asyncio.to_thread(
+                probe_gemini_generation, key, candidate
+            )
+            if ok:
+                chosen = candidate
+                break
         if not ok:
             raise HTTPException(
                 status_code=400,
                 detail=f"Gemini cannot answer with this key: {reason}.",
             )
+        if chosen not in models:
+            models = [chosen, *models]
 
         _persist_cloud_key("GEMINI_API_KEY", key)
         os.environ["GEMINI_API_KEY"] = key
