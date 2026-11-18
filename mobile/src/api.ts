@@ -39,6 +39,7 @@ export interface MobileStatus {
   gemini_key_source?: string;
   scheduler: boolean;
   voice?: VoiceStatus;
+  speech_out?: VoiceStatus;
   server_time: string;
 }
 
@@ -153,6 +154,29 @@ export function runTask(id: string): Promise<{ status: string }> {
 
 export function fetchRuns(id: string): Promise<{ runs: TaskRun[] }> {
   return request(`/v1/mobile/tasks/${id}/runs`);
+}
+
+/** Turn a reply into audio with the server's configured voice. */
+export async function synthesize(text: string): Promise<Blob> {
+  const response = await fetch('/v1/mobile/speech', {
+    method: 'POST',
+    headers: headers({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ text }),
+  });
+  if (response.status === 401) {
+    throw new ApiError(401, 'This phone is not paired with the server.');
+  }
+  if (!response.ok) {
+    let detail = `Voice failed (${response.status})`;
+    try {
+      const body = await response.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      // non-JSON error body
+    }
+    throw new ApiError(response.status, detail);
+  }
+  return await response.blob();
 }
 
 /** Send recorded audio to the server's speech-to-text backend. */

@@ -7,13 +7,15 @@ import {
   type MobileStatus,
 } from './api';
 import { ChatView } from './views/ChatView';
+import { JarvisView } from './views/JarvisView';
 import { TasksView } from './views/TasksView';
 import { SettingsView } from './views/SettingsView';
 import './styles.css';
 
-type Tab = 'chat' | 'tasks' | 'settings';
+type Tab = 'core' | 'chat' | 'tasks' | 'settings';
 
 const TAB_META: Array<{ id: Tab; label: string; icon: string }> = [
+  { id: 'core', label: 'Core', icon: '◎' },
   { id: 'chat', label: 'Chat', icon: '💬' },
   { id: 'tasks', label: 'Tasks', icon: '⏱' },
   { id: 'settings', label: 'Settings', icon: '⚙️' },
@@ -21,7 +23,7 @@ const TAB_META: Array<{ id: Tab; label: string; icon: string }> = [
 
 export default function App() {
   const [paired, setPaired] = useState<boolean | null>(null);
-  const [tab, setTab] = useState<Tab>('chat');
+  const [tab, setTab] = useState<Tab>('core');
   const [status, setStatus] = useState<MobileStatus | null>(null);
   const [statusError, setStatusError] = useState('');
   const [pairError, setPairError] = useState('');
@@ -101,7 +103,8 @@ export default function App() {
   const connected = Boolean(status?.configured);
 
   return (
-    <div className="app">
+    <div className={`app ${tab === 'core' ? 'app-hud' : ''}`}>
+      {tab !== 'core' && (
       <header className="app-header">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true" />
@@ -121,9 +124,19 @@ export default function App() {
           {connected ? 'Live' : 'Connect'}
         </button>
       </header>
+      )}
 
       <main className="app-main">
-        {statusError && <div className="banner banner-error">{statusError}</div>}
+        {statusError && tab !== 'core' && (
+          <div className="banner banner-error">{statusError}</div>
+        )}
+        {tab === 'core' && (
+          <JarvisView
+            status={status}
+            onOpenSettings={() => setTab('settings')}
+            onOpenChat={() => setTab('chat')}
+          />
+        )}
         {tab === 'chat' && (
           <ChatView status={status} onOpenSettings={() => setTab('settings')} />
         )}

@@ -1,0 +1,804 @@
+/* Jarvis command-centre HUD. Red-on-black instrument styling, clipped panel
+   corners and instrument rings that move with the real voice state. */
+
+.hud {
+  --hud-red: #ff3a3a;
+  --hud-red-soft: rgba(255, 58, 58, 0.35);
+  --hud-red-dim: #a86a6a;
+  --hud-text: #f6e6e6;
+  --hud-font: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 8px;
+  overflow: hidden;
+  color: var(--hud-text);
+  font-family: var(--hud-font);
+  background:
+    radial-gradient(58% 42% at 50% 34%, rgba(255, 32, 32, 0.16), transparent 72%),
+    radial-gradient(120% 90% at 50% 50%, #120a0a 0%, #080606 55%, #000 100%);
+}
+
+.hud::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.028) 0 1px,
+    transparent 1px 3px
+  );
+  opacity: 0.5;
+  mix-blend-mode: screen;
+}
+
+.hud-corners {
+  position: absolute;
+  inset: 6px;
+  pointer-events: none;
+}
+
+.hud-corners::before,
+.hud-corners::after {
+  content: '';
+  position: absolute;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--hud-red-soft);
+}
+
+.hud-corners::before {
+  top: 0;
+  left: 0;
+  border-right: 0;
+  border-bottom: 0;
+}
+
+.hud-corners::after {
+  right: 0;
+  bottom: 0;
+  border-left: 0;
+  border-top: 0;
+}
+
+/* ---------- header ---------- */
+
+.hud-header {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hud-identity h1 {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  color: #fff1f1;
+  text-shadow: 0 0 18px rgba(255, 40, 40, 0.55);
+}
+
+.hud-online {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  font-size: 9.5px;
+  letter-spacing: 0.24em;
+  color: #8a6a6a;
+}
+
+.hud-online-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #5a3a3a;
+}
+
+.hud-online.is-live {
+  color: #ff9d9d;
+}
+
+.hud-online.is-live .hud-online-dot {
+  background: var(--hud-red);
+  box-shadow: 0 0 9px rgba(255, 50, 50, 0.9);
+  animation: hudBlink 2.4s ease-in-out infinite;
+}
+
+.hud-nav {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.hud-link {
+  padding: 4px 8px;
+  font-family: inherit;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: #d79a9a;
+  background: rgba(255, 40, 40, 0.07);
+  border: 1px solid rgba(255, 60, 60, 0.28);
+  clip-path: polygon(0 4px, 4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%);
+}
+
+.hud-link:active {
+  background: rgba(255, 40, 40, 0.18);
+}
+
+.hud-clock {
+  text-align: right;
+  line-height: 1.15;
+}
+
+.hud-clock time {
+  display: block;
+  font-size: 22px;
+  letter-spacing: 0.06em;
+  color: #fff2f2;
+  text-shadow: 0 0 14px rgba(255, 40, 40, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-clock span {
+  display: block;
+  margin-top: 2px;
+  font-size: 8.5px;
+  letter-spacing: 0.2em;
+  color: #9a7373;
+}
+
+/* ---------- stage ---------- */
+
+.hud-stage {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+/* A phone cannot hold the full command centre at once: the core, the
+   transcript and the mic matter there, the readout panels return on wider
+   screens where there is room beside the core. */
+.panel-status,
+.panel-core,
+.panel-activity {
+  display: none;
+}
+
+.hud-panel {
+  border: 1px solid rgba(255, 60, 60, 0.26);
+  background: linear-gradient(165deg, rgba(36, 10, 10, 0.78), rgba(10, 6, 6, 0.62));
+  padding: 9px 11px;
+  clip-path: polygon(
+    0 8px,
+    8px 0,
+    100% 0,
+    100% calc(100% - 8px),
+    calc(100% - 8px) 100%,
+    0 100%
+  );
+  box-shadow: inset 0 0 24px rgba(255, 30, 30, 0.06);
+}
+
+.hud-panel h2 {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: #ffb0b0;
+  margin-bottom: 7px;
+}
+
+.hud-panel h3 {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: #c98d8d;
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+
+.hud-readouts {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+}
+
+.hud-readouts div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hud-readouts dt {
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  color: var(--hud-red-dim);
+}
+
+.hud-readouts dd {
+  margin: 0;
+  font-size: 11px;
+  color: #ffdede;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 62%;
+}
+
+.hud-wave {
+  display: block;
+  width: 100%;
+  height: 30px;
+}
+
+.wave-mini {
+  height: 22px;
+  margin-top: 7px;
+  opacity: 0.9;
+}
+
+/* ---------- core ---------- */
+
+.core {
+  position: relative;
+  align-self: center;
+  width: min(70vw, 280px);
+  aspect-ratio: 1;
+  flex: none;
+}
+
+.core::before {
+  content: '';
+  position: absolute;
+  inset: 8%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 30, 30, 0.16), transparent 68%);
+  filter: blur(6px);
+}
+
+.core-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.ring {
+  fill: none;
+  stroke: rgba(255, 60, 60, 0.42);
+  transform-origin: 200px 200px;
+}
+
+.ring-ticks {
+  stroke-width: 5;
+  stroke-dasharray: 1 6;
+  stroke: rgba(255, 70, 70, 0.5);
+  animation: hudSpin 90s linear infinite;
+}
+
+.ring-outer {
+  stroke-width: 1.4;
+  stroke-dasharray: 2 9;
+  animation: hudSpin 64s linear infinite reverse;
+}
+
+.ring-dashed {
+  stroke-width: 2;
+  stroke-dasharray: 42 12 6 12;
+  stroke: rgba(255, 80, 80, 0.35);
+  animation: hudSpin 44s linear infinite;
+}
+
+.ring-arc {
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-dasharray: 110 760;
+  stroke: rgba(255, 48, 48, 0.9);
+  filter: drop-shadow(0 0 6px rgba(255, 40, 40, 0.8));
+  animation: hudSpin 15s linear infinite;
+}
+
+.ring-arc-b {
+  stroke-width: 3;
+  stroke-dasharray: 48 820;
+  stroke: rgba(255, 130, 130, 0.85);
+  animation: hudSpin 9s linear infinite reverse;
+}
+
+.ring-inner {
+  stroke-width: 1;
+  opacity: 0.55;
+}
+
+.ring-inner-dashed {
+  stroke-width: 3;
+  stroke-dasharray: 4 9;
+  stroke: rgba(255, 90, 90, 0.4);
+  animation: hudSpin 28s linear infinite reverse;
+}
+
+.ring-core {
+  stroke: rgba(255, 80, 80, 0.6);
+}
+
+.ring-idle {
+  fill: rgba(255, 30, 30, 0.12);
+  stroke: rgba(255, 70, 70, 0.7);
+  animation: hudBreathe 3.4s ease-in-out infinite;
+}
+
+.core-listening .ring-arc {
+  animation-duration: 6s;
+}
+
+.core-listening .ring-idle {
+  animation-duration: 1.4s;
+}
+
+.core-thinking .ring-arc {
+  animation-duration: 2.2s;
+}
+
+.core-thinking .ring-arc-b {
+  animation-duration: 1.2s;
+}
+
+.core-speaking .ring-core {
+  stroke: #ff6a6a;
+  animation: hudBreathe 0.8s ease-in-out infinite;
+}
+
+.core-speaking .ring-idle {
+  fill: rgba(255, 60, 60, 0.3);
+  animation-duration: 0.7s;
+}
+
+.core-readout {
+  position: absolute;
+  inset: 26%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.core-mode {
+  font-size: 10px;
+  letter-spacing: 0.26em;
+  color: #ffd0d0;
+  text-shadow: 0 0 12px rgba(255, 50, 50, 0.8);
+}
+
+.core-line {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: #ffe4e4;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  opacity: 0.92;
+}
+
+.wave-core {
+  position: absolute;
+  left: 16%;
+  right: 16%;
+  bottom: 6px;
+  width: 68%;
+  height: 30px;
+  opacity: 0.85;
+}
+
+/* ---------- core card ---------- */
+
+.core-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.core-card strong {
+  display: block;
+  font-size: 12.5px;
+  color: #fff0f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+}
+
+.core-card span {
+  display: block;
+  margin-top: 3px;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: #ff9d9d;
+}
+
+.core-glyph {
+  width: 42px;
+  height: 42px;
+  flex: none;
+  fill: none;
+  stroke: rgba(255, 70, 70, 0.75);
+  stroke-width: 1.6;
+  filter: drop-shadow(0 0 6px rgba(255, 40, 40, 0.5));
+}
+
+.core-glyph .is-filled {
+  fill: rgba(255, 50, 50, 0.35);
+  stroke: rgba(255, 90, 90, 0.9);
+}
+
+.panel-sub {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 60, 60, 0.16);
+}
+
+.panel-sub p {
+  font-size: 10.5px;
+  color: #e6c9c9;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ---------- transcript + activity ---------- */
+
+.panel-transcript {
+  flex: 1;
+  min-height: 84px;
+  max-height: 30vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.hud-transcript,
+.hud-commands,
+.hud-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.hud-transcript {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 10.5px;
+  line-height: 1.42;
+}
+
+.hud-transcript li {
+  display: flex;
+  gap: 7px;
+}
+
+.line-tag {
+  flex: none;
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  padding-top: 2px;
+  color: #ff7d7d;
+  opacity: 0.8;
+}
+
+.line-text {
+  color: #f2d6d6;
+  word-break: break-word;
+}
+
+.line-user .line-text {
+  color: #c9a9a9;
+}
+
+.line-assistant .line-text {
+  color: #fff1f1;
+}
+
+.hud-commands {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.hud-commands button {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  font-size: 10.5px;
+  text-align: left;
+  color: #e8cfcf;
+}
+
+.hud-commands button::before {
+  content: '› ';
+  color: #ff5b5b;
+}
+
+.hud-commands button:active {
+  color: #fff;
+}
+
+.hud-log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 10px;
+  color: #e2c4c4;
+  max-height: 84px;
+}
+
+.hud-log li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hud-log time {
+  color: #ff8b8b;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-log .is-muted {
+  color: #8a6a6a;
+}
+
+.log-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(255, 60, 60, 0.75);
+  flex: none;
+}
+
+/* ---------- microphone pod ---------- */
+
+.hud-mic-wrap {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.hud-mic {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 70, 70, 0.55);
+  background: radial-gradient(circle at 50% 38%, #310d0d, #120505 72%);
+  color: #ffd7d7;
+  box-shadow:
+    0 0 26px rgba(255, 30, 30, 0.28),
+    inset 0 0 20px rgba(255, 30, 30, 0.22);
+}
+
+.hud-mic .mic-ring {
+  position: absolute;
+  inset: -9px;
+  border-radius: 50%;
+  border: 1px dashed rgba(255, 70, 70, 0.32);
+  animation: hudSpin 22s linear infinite;
+}
+
+.hud-mic.is-live {
+  color: #fff;
+  border-color: rgba(255, 70, 70, 0.95);
+  animation: hudMicPulse 1.7s ease-in-out infinite;
+}
+
+.hud-mic.is-speaking {
+  border-style: double;
+}
+
+.hud-mic:active {
+  transform: scale(0.96);
+}
+
+.hud-mic-label {
+  font-size: 8.5px;
+  letter-spacing: 0.22em;
+  color: #ff9d9d;
+}
+
+/* ---------- notice ---------- */
+
+.hud-notice {
+  position: relative;
+  z-index: 2;
+  padding: 6px 9px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #ffd9d9;
+  border: 1px solid rgba(255, 60, 60, 0.35);
+  background: rgba(255, 40, 40, 0.1);
+}
+
+/* ---------- breakpoints ---------- */
+
+@media (min-width: 760px) {
+  .hud {
+    padding: 16px 20px 10px;
+  }
+
+  .hud-identity h1 {
+    font-size: 22px;
+  }
+
+  .panel-status,
+  .panel-core,
+  .panel-activity {
+    display: block;
+  }
+
+  .panel-transcript {
+    max-height: none;
+  }
+
+  .core {
+    width: min(46vh, 380px);
+  }
+
+  .hud-stage {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) minmax(0, 2.1fr) minmax(180px, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      'status core model'
+      'transcript core activity'
+      'transcript mic activity';
+    column-gap: 14px;
+    row-gap: 10px;
+    align-items: start;
+  }
+
+  .panel-status {
+    grid-area: status;
+  }
+
+  .panel-core {
+    grid-area: model;
+  }
+
+  .panel-transcript {
+    grid-area: transcript;
+    align-self: end;
+    min-height: 0;
+    max-height: 260px;
+  }
+
+  .panel-activity {
+    grid-area: activity;
+    align-self: end;
+  }
+
+  .core {
+    grid-area: core;
+    align-self: center;
+    justify-self: center;
+  }
+
+  .hud-mic-wrap {
+    grid-area: mic;
+    align-self: center;
+  }
+}
+
+@media (min-width: 1024px) {
+  .hud {
+    padding: 18px 26px 12px;
+  }
+
+  .hud-identity h1 {
+    font-size: 26px;
+  }
+
+  .hud-clock time {
+    font-size: 30px;
+  }
+
+  .hud-stage {
+    grid-template-columns: minmax(200px, 255px) minmax(0, 1fr) minmax(200px, 255px);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    column-gap: 26px;
+    row-gap: 18px;
+  }
+
+  .core {
+    width: min(52vh, 430px);
+  }
+
+  .core-mode {
+    font-size: 11px;
+  }
+
+  .core-line {
+    font-size: 12.5px;
+  }
+
+  .hud-mic {
+    width: 84px;
+    height: 84px;
+  }
+}
+
+@keyframes hudSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes hudBreathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes hudBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes hudMicPulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 0 rgba(255, 50, 50, 0.42),
+      inset 0 0 20px rgba(255, 30, 30, 0.25);
+  }
+  50% {
+    box-shadow:
+      0 0 0 12px rgba(255, 50, 50, 0),
+      inset 0 0 26px rgba(255, 30, 30, 0.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring,
+  .ring-idle,
+  .hud-mic,
+  .hud-mic .mic-ring,
+  .hud-online.is-live .hud-online-dot {
+    animation: none !important;
+  }
+}

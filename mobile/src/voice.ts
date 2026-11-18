@@ -1,0 +1,314 @@
+// Browser voice plumbing for the Jarvis HUD: microphone level metering, the
+// Web Speech recogniser, and a queue that plays reply audio sentence by
+// sentence so Jarvis starts talking before the whole answer exists.
+
+import { synthesize } from './api';
+
+interface RecognitionAlternative {
+  transcript: string;
+  confidence: number;
+}
+
+interface RecognitionResult {
+  isFinal: boolean;
+  length: number;
+  [index: number]: RecognitionAlternative;
+}
+
+interface RecognitionEvent {
+  resultIndex: number;
+  results: { length: number; [index: number]: RecognitionResult };
+}
+
+interface RecognitionErrorEvent {
+  error: string;
+  message?: string;
+}
+
+export interface Recognizer {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onstart: (() => void) | null;
+  onresult: ((event: RecognitionEvent) => void) | null;
+  onerror: ((event: RecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+}
+
+type RecognizerCtor = new () => Recognizer;
+
+function recognizerCtor(): RecognizerCtor | null {
+  if (typeof window === 'undefined') return null;
+  const scope = window as unknown as {
+    SpeechRecognition?: RecognizerCtor;
+    webkitSpeechRecognition?: RecognizerCtor;
+  };
+  return scope.SpeechRecognition || scope.webkitSpeechRecognition || null;
+}
+
+export function recognitionSupported(): boolean {
+  return recognizerCtor() !== null;
+}
+
+export function createRecognizer(lang = 'en-US'): Recognizer | null {
+  const Ctor = recognizerCtor();
+  if (!Ctor) return null;
+  const recognizer = new Ctor();
+  recognizer.lang = lang;
+  recognizer.continuous = true;
+  recognizer.interimResults = true;
+  recognizer.maxAlternatives = 1;
+  return recognizer;
+}
+
+/** Human-readable reason for a recognition failure. */
+export function recognitionError(error: string): string {
+  switch (error) {
+    case 'not-allowed':
+    case 'service-not-allowed':
+      return 'Microphone permission was denied. Allow it for this site, then tap the core again.';
+    case 'audio-capture':
+      return 'No microphone was found on this device.';
+    case 'network':
+      return 'Speech recognition needs a network connection on this browser.';
+    case 'no-speech':
+      return '';
+    case 'aborted':
+      return '';
+    default:
+      return `Speech recognition stopped (${error}).`;
+  }
+}
+
+/** Root-mean-square level of a live stream, 0–1, for the waveform. */
+export class MicMeter {
+  private context: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private source: MediaStreamAudioSourceNode | null = null;
+  private buffer: Float32Array<ArrayBuffer> | null = null;
+
+  async attach(stream: MediaStream): Promise<void> {
+    const Ctor =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+    if (!Ctor) return;
+    this.context = new Ctor();
+    this.source = this.context.createMediaStreamSource(stream);
+    this.analyser = this.context.createAnalyser();
+    this.analyser.fftSize = 512;
+    this.analyser.smoothingTimeConstant = 0.6;
+    this.source.connect(this.analyser);
+    this.buffer = new Float32Array(new ArrayBuffer(512 * 4));
+  }
+
+  read(): number {
+    if (!this.analyser || !this.buffer) return 0;
+    this.analyser.getFloatTimeDomainData(this.buffer);
+    let sum = 0;
+    for (let i = 0; i < this.buffer.length; i += 1) {
+      sum += this.buffer[i] * this.buffer[i];
+    }
+    return Math.min(1, Math.sqrt(sum / this.buffer.length) * 4.5);
+  }
+
+  dispose(): void {
+    this.source?.disconnect();
+    this.analyser?.disconnect();
+    void this.context?.close();
+    this.context = null;
+    this.analyser = null;
+    this.source = null;
+    this.buffer = null;
+  }
+}
+
+/** Splits streamed reply text into speakable sentences. */
+export class SentenceSplitter {
+  private buffer = '';
+
+  push(chunk: string): string[] {
+    this.buffer += chunk;
+    const ready: string[] = [];
+    let match = /[.!?…]+["')\]]*\s/.exec(this.buffer);
+    while (match) {
+      const end = match.index + match[0].length;
+      const sentence = this.buffer.slice(0, end).trim();
+      this.buffer = this.buffer.slice(end);
+      if (sentence) ready.push(sentence);
+      match = /[.!?…]+["')\]]*\s/.exec(this.buffer);
+    }
+    // A long stretch without sentence punctuation still needs to be spoken.
+    if (this.buffer.length > 220) {
+      const cut = this.buffer.lastIndexOf(' ', 200);
+      const take = cut > 40 ? cut : 200;
+      ready.push(this.buffer.slice(0, take).trim());
+      this.buffer = this.buffer.slice(take);
+    }
+    return ready.filter(Boolean);
+  }
+
+  flush(): string {
+    const rest = this.buffer.trim();
+    this.buffer = '';
+    return rest;
+  }
+}
+
+/**
+ * Plays reply audio in order. Falls back to the browser's own speech synthesis
+ * when the server has no voice configured, so Jarvis is never silent.
+ */
+export class SpeechQueue {
+  private sentences: string[] = [];
+  private playing = false;
+  private audio: HTMLAudioElement | null = null;
+  private url = '';
+  private context: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private buffer: Float32Array<ArrayBuffer> | null = null;
+  private fallback: SpeechSynthesisUtterance | null = null;
+
+  constructor(
+    private readonly onBusyChange: (busy: boolean) => void,
+    private readonly onServerVoice: (used: boolean) => void,
+  ) {}
+
+  get busy(): boolean {
+    return this.playing;
+  }
+
+  enqueue(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    this.sentences.push(trimmed);
+    if (!this.playing) void this.pump();
+  }
+
+  /** Silence immediately — used for barge-in. */
+  stop(): void {
+    this.sentences = [];
+    if (this.audio) {
+      this.audio.onended = null;
+      this.audio.pause();
+      this.audio = null;
+    }
+    if (this.url) {
+      URL.revokeObjectURL(this.url);
+      this.url = '';
+    }
+    if (this.fallback) {
+      window.speechSynthesis?.cancel();
+      this.fallback = null;
+    }
+    if (this.playing) {
+      this.playing = false;
+      this.onBusyChange(false);
+    }
+  }
+
+  /** Output level of the reply audio, 0–1, for the speaking animation. */
+  readLevel(): number {
+    if (!this.analyser || !this.buffer) return 0;
+    this.analyser.getFloatTimeDomainData(this.buffer);
+    let sum = 0;
+    for (let i = 0; i < this.buffer.length; i += 1) {
+      sum += this.buffer[i] * this.buffer[i];
+    }
+    return Math.min(1, Math.sqrt(sum / this.buffer.length) * 4.5);
+  }
+
+  dispose(): void {
+    this.stop();
+    this.analyser?.disconnect();
+    void this.context?.close();
+    this.context = null;
+    this.analyser = null;
+    this.buffer = null;
+  }
+
+  private async pump(): Promise<void> {
+    this.playing = true;
+    this.onBusyChange(true);
+    while (this.sentences.length) {
+      const sentence = this.sentences.shift() as string;
+      let serverVoice = true;
+      try {
+        const blob = await synthesize(sentence);
+        await this.playBlob(blob);
+      } catch {
+        serverVoice = false;
+        await this.playBrowserVoice(sentence);
+      }
+      this.onServerVoice(serverVoice);
+    }
+    this.playing = false;
+    this.onBusyChange(false);
+  }
+
+  private async playBlob(blob: Blob): Promise<void> {
+    if (this.url) URL.revokeObjectURL(this.url);
+    this.url = URL.createObjectURL(blob);
+    const audio = new Audio(this.url);
+    audio.preload = 'auto';
+    this.audio = audio;
+    this.attachAnalyser(audio);
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        audio.onended = null;
+        audio.onerror = null;
+        resolve();
+      };
+      audio.onended = done;
+      audio.onerror = done;
+      void audio.play().catch(done);
+    });
+    this.audio = null;
+  }
+
+  private playBrowserVoice(sentence: string): Promise<void> {
+    if (!window.speechSynthesis) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const utterance = new SpeechSynthesisUtterance(sentence);
+      utterance.lang = 'en-GB';
+      utterance.rate = 1.02;
+      utterance.pitch = 0.85;
+      this.fallback = utterance;
+      const done = () => {
+        utterance.onend = null;
+        utterance.onerror = null;
+        this.fallback = null;
+        resolve();
+      };
+      utterance.onend = done;
+      utterance.onerror = done;
+      window.speechSynthesis.speak(utterance);
+    });
+  }
+
+  private attachAnalyser(audio: HTMLAudioElement): void {
+    if (this.context) return;
+    const Ctor =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+    if (!Ctor) return;
+    try {
+      this.context = new Ctor();
+      const source = this.context.createMediaElementSource(audio);
+      this.analyser = this.context.createAnalyser();
+      this.analyser.fftSize = 512;
+      this.analyser.smoothingTimeConstant = 0.7;
+      source.connect(this.analyser);
+      this.analyser.connect(this.context.destination);
+      this.buffer = new Float32Array(new ArrayBuffer(512 * 4));
+    } catch {
+      this.context = null;
+      this.analyser = null;
+    }
+  }
+}

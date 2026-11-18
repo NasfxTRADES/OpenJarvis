@@ -12,6 +12,7 @@ to a free model provider, and start scheduling tasks without a restart.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -21,7 +22,7 @@ from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from openjarvis.core.credentials import (
@@ -415,6 +416,7 @@ class MobileRuntime:
             "chain": chain,
             "active_provider": active_provider,
             "voice": self.voice_status(),
+            "speech_out": self.tts_status(),
             "tasks": len(self.list_tasks()),
             "free_models": list(FALLBACK_FREE_MODELS),
             "key_source": openrouter_key_source(),
@@ -422,6 +424,25 @@ class MobileRuntime:
             "scheduler": self._scheduler is not None,
             "server_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+
+    def tts_status(self) -> dict[str, Any]:
+        """Report whether replies can be spoken out loud on this server."""
+        try:
+            from openjarvis.speech._tts_discovery import get_tts_backend
+
+            backend = get_tts_backend("fish_audio")
+        except Exception as exc:  # pragma: no cover - import/env failures
+            return {"available": False, "backend": "", "reason": str(exc)}
+        if backend is None:
+            return {
+                "available": False,
+                "backend": "",
+                "reason": (
+                    "No voice is configured on the server. Add FISH_AUDIO_API_KEY "
+                    "in the server's environment to hear Jarvis speak."
+                ),
+            }
+        return {"available": True, "backend": backend.backend_id, "reason": ""}
 
     def voice_status(self) -> dict[str, Any]:
         """Report whether hold-to-talk can transcribe on this server."""
@@ -963,6 +984,12 @@ class MobileTaskPatch(BaseModel):
     status: str
 
 
+class MobileSpeechRequest(BaseModel):
+    text: str
+    voice_id: str = ""
+    format: str = "mp3"
+
+
 def _runtime(request: Request) -> MobileRuntime:
     runtime = getattr(request.app.state, "mobile_runtime", None)
     if runtime is None:
@@ -973,6 +1000,51 @@ def _runtime(request: Request) -> MobileRuntime:
 @router.get("/status")
 async def mobile_status(request: Request) -> dict[str, Any]:
     return _runtime(request).status()
+
+
+@router.post("/speech")
+async def mobile_speech(body: MobileSpeechRequest, request: Request) -> Response:
+    """Speak a reply with the configured TTS voice and return the audio bytes."""
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Nothing to speak.")
+    if len(text) > 4000:
+        text = text[:4000]
+
+    from openjarvis.speech._tts_discovery import get_tts_backend
+
+    backend = await asyncio.to_thread(get_tts_backend, "fish_audio")
+    if backend is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No voice is configured on the server. Add FISH_AUDIO_API_KEY to "
+                "the server's environment, then try again."
+            ),
+        )
+    try:
+        result = await asyncio.to_thread(
+            backend.synthesize,
+            text,
+            voice_id=body.voice_id,
+            output_format=body.format,
+        )
+    except Exception as exc:
+        logger.warning("Voice synthesis failed: %s", exc)
+        raise HTTPException(
+            status_code=502, detail=f"Voice synthesis failed: {exc}"
+        ) from exc
+
+    media_type = {
+        "mp3": "audio/mpeg",
+        "wav": "audio/wav",
+        "opus": "audio/ogg",
+    }.get(result.format, "audio/mpeg")
+    return Response(
+        content=result.audio,
+        media_type=media_type,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/setup")

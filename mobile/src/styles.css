@@ -1041,3 +1041,44 @@ code {
   flex-direction: column;
   gap: 6px;
 }
+
+/* ---------- jarvis hud shell ---------- */
+
+.app.app-hud {
+  max-width: none;
+  background: #000;
+}
+
+@media (min-width: 620px) {
+  .app.app-hud {
+    border-inline: 0;
+  }
+}
+
+.app-hud .tabbar {
+  grid-template-columns: repeat(4, 1fr);
+  background: rgba(6, 4, 4, 0.94);
+  border-top: 1px solid rgba(255, 60, 60, 0.22);
+}
+
+.app-hud .tab {
+  color: #8a5f5f;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.app-hud .tab.is-active {
+  color: #ffdede;
+  background: rgba(255, 40, 40, 0.13);
+}
+
+.app-hud .tab.is-active .tab-icon {
+  filter: none;
+  color: #ff5b5b;
+}
+
+.app-hud .tab-icon {
+  filter: grayscale(1) opacity(0.5);
+}
