@@ -75,6 +75,16 @@ services:
       - key: OPENJARVIS_FREE_CHAIN
         value: "groq,cerebras,gemini,mistral,openrouter,grok,openai,claude"
 
+      # Jarvis's voice. ElevenLabs is already a supported TTS backend in this
+      # codebase (src/openjarvis/speech/elevenlabs_tts.py); it reads the key from
+      # ELEVENLABS_API_KEY and the voice from ELEVENLABS_VOICE_ID. Paste both in
+      # the dashboard, not here: the voice ID belongs to your own voice, so it is
+      # kept out of the repository just like the key.
+      #   ELEVENLABS_API_KEY    elevenlabs.io → Profile → API keys
+      #   ELEVENLABS_VOICE_ID   the voice you picked, from its ElevenLabs URL
+      - key: ELEVENLABS_API_KEY
+        sync: false
+
       # The free instance filesystem is ephemeral: scheduled tasks, the saved
       # model choice and transcripts are lost on every restart, spin-down or
       # deploy. Keys above survive because they are environment variables.
