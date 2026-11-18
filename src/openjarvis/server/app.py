@@ -24,6 +24,7 @@ from openjarvis.server.comparison import comparison_router
 from openjarvis.server.connectors_router import create_connectors_router
 from openjarvis.server.dashboard import dashboard_router
 from openjarvis.server.digest_routes import create_digest_router
+from openjarvis.server.mobile_routes import audio_router as mobile_audio_router
 from openjarvis.server.mobile_routes import install_mobile_runtime
 from openjarvis.server.mobile_routes import router as mobile_router
 from openjarvis.server.research_router import router as research_router
@@ -491,6 +492,7 @@ def create_app(
     # server without any desktop setup.
     install_mobile_runtime(app, config=config, api_key=api_key)
     app.include_router(mobile_router)
+    app.include_router(mobile_audio_router)
 
     # Restore SendBlue channel bindings from database on startup
     _restore_sendblue_bindings(app)

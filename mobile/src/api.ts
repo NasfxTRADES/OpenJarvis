@@ -156,6 +156,15 @@ export function fetchRuns(id: string): Promise<{ runs: TaskRun[] }> {
   return request(`/v1/mobile/tasks/${id}/runs`);
 }
 
+/** Mint a short-lived URL an <audio> element can stream from. */
+export async function speechUrl(text: string, speed = 1.12): Promise<string> {
+  const data = await request<{ url: string }>('/v1/mobile/speech/url', {
+    method: 'POST',
+    body: JSON.stringify({ text, speed }),
+  });
+  return data.url;
+}
+
 /** Read an OpenAI-style SSE body as text deltas. */
 async function* sseDeltas(response: Response): AsyncGenerator<string> {
   if (!response.body) return;

@@ -16,9 +16,11 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import threading
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections import OrderedDict
+from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -1006,6 +1008,19 @@ class MobileReplyRequest(BaseModel):
     max_tokens: int = 320
 
 
+# One-use URLs let an <audio> element stream a reply. The element cannot send
+# the Authorization header, so the ticket is the credential and it dies quickly.
+_SPEECH_TICKETS: "OrderedDict[str, tuple[float, str, str, float]]" = OrderedDict()
+_SPEECH_TICKET_TTL = 90.0
+_SPEECH_TICKET_MAX = 96
+
+
+class MobileSpeechUrlRequest(BaseModel):
+    text: str
+    voice_id: str = ""
+    speed: float = 1.12
+
+
 class MobileSpeechRequest(BaseModel):
     text: str
     voice_id: str = ""
@@ -1126,6 +1141,82 @@ async def mobile_speech(body: MobileSpeechRequest, request: Request) -> Response
         content=result.audio,
         media_type=media_type,
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/speech/url")
+async def mobile_speech_url(body: MobileSpeechUrlRequest) -> dict[str, Any]:
+    """Mint a short-lived URL an <audio> element can stream from."""
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Nothing to speak.")
+    token = secrets.token_urlsafe(24)
+    _SPEECH_TICKETS[token] = (
+        time.monotonic() + _SPEECH_TICKET_TTL,
+        text[:4000],
+        body.voice_id,
+        max(0.5, min(2.0, body.speed)),
+    )
+    while len(_SPEECH_TICKETS) > _SPEECH_TICKET_MAX:
+        _SPEECH_TICKETS.popitem(last=False)
+    return {"url": f"/voice/{token}.mp3", "expires_in": _SPEECH_TICKET_TTL}
+
+
+# Mounted without the API key on purpose: an <audio> element cannot send an
+# Authorization header. The ticket above is the credential.
+audio_router = APIRouter(tags=["mobile-audio"])
+
+
+@audio_router.get("/voice/{token}.mp3")
+async def mobile_voice_audio(token: str) -> StreamingResponse:
+    """Stream a reply's audio while the voice engine is still generating it."""
+    entry = _SPEECH_TICKETS.get(token)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired voice link.")
+    if time.monotonic() > entry[0]:
+        _SPEECH_TICKETS.pop(token, None)
+        raise HTTPException(status_code=404, detail="Unknown or expired voice link.")
+    _, text, voice_id, speed = entry
+
+    from openjarvis.speech._tts_discovery import get_tts_backend
+
+    backend = await asyncio.to_thread(get_tts_backend, "fish_audio")
+    if backend is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No voice is configured on the server. Add FISH_AUDIO_API_KEY to "
+                "the server's environment, then try again."
+            ),
+        )
+
+    streamer = getattr(backend, "stream_synthesize", None)
+    if streamer is None:
+        result = await asyncio.to_thread(
+            backend.synthesize,
+            text,
+            voice_id=voice_id,
+            output_format="mp3",
+            speed=speed,
+        )
+        return StreamingResponse(
+            iter([result.audio]),
+            media_type="audio/mpeg",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    def chunks() -> Iterator[bytes]:
+        try:
+            yield from streamer(
+                text, voice_id=voice_id, speed=speed, output_format="mp3"
+            )
+        except Exception as exc:  # noqa: BLE001 - headers are already sent
+            logger.warning("Streamed voice failed: %s", exc)
+
+    return StreamingResponse(
+        chunks(),
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
 
 

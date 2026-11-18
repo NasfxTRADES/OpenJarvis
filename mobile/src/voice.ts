@@ -2,7 +2,7 @@
 // Web Speech recogniser, and a queue that plays reply audio sentence by
 // sentence so Jarvis starts talking before the whole answer exists.
 
-import { synthesize } from './api';
+import { speechUrl, synthesize } from './api';
 
 interface RecognitionAlternative {
   transcript: string;
@@ -326,21 +326,17 @@ export class SpeechQueue {
     while (this.sentences.length) {
       const sentence = this.sentences[0];
       const next = this.sentences[1];
-      // Fetch the following sentence while this one plays: the gap between
-      // sentences is the other half of the perceived delay.
-      if (next) void this.fetchAudio(next).catch(() => {});
+      // Request the following sentence's link while this one plays: paying the
+      // round trip later is the gap that makes speech feel late.
+      if (next) void speechUrl(next, this.speed).catch(() => {});
       let serverVoice = true;
       try {
-        const blob = await this.fetchAudio(sentence);
-        if (!this.playing) break;
-        this.sentences.shift();
-        await this.playBlob(blob);
+        serverVoice = await this.playSentence(sentence);
       } catch {
-        if (!this.playing) break;
         serverVoice = false;
-        this.sentences.shift();
-        await this.playBrowserVoice(sentence);
       }
+      if (!this.playing) break;
+      this.sentences.shift();
       this.onServerVoice(serverVoice);
     }
     this.pumping = false;
@@ -348,6 +344,55 @@ export class SpeechQueue {
       this.playing = false;
       this.onBusyChange(false);
     }
+  }
+
+  /**
+   * Speak one sentence. The server URL is tried first because the browser can
+   * start playing while the voice engine is still producing audio; the whole
+   * clip is the fallback.
+   */
+  private async playSentence(sentence: string): Promise<boolean> {
+    try {
+      const url = await speechUrl(sentence, this.speed);
+      if (await this.playUrl(url)) return true;
+    } catch {
+      // fall through to the buffered path
+    }
+    try {
+      const blob = await this.fetchAudio(sentence);
+      if (!this.playing) return true;
+      await this.playBlob(blob);
+      return true;
+    } catch {
+      await this.playBrowserVoice(sentence);
+      return false;
+    }
+  }
+
+  private async playUrl(url: string): Promise<boolean> {
+    const audio = this.element();
+    audio.src = url;
+    return await new Promise<boolean>((resolve) => {
+      let settled = false;
+      let started = false;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        audio.onended = null;
+        audio.onerror = null;
+        audio.onplaying = null;
+        this.pendingResolve = null;
+        resolve(ok);
+      };
+      const done = () => finish(started);
+      this.pendingResolve = done;
+      audio.onplaying = () => {
+        started = true;
+      };
+      audio.onended = done;
+      audio.onerror = done;
+      void audio.play().catch(done);
+    });
   }
 
   private async playBlob(blob: Blob): Promise<void> {

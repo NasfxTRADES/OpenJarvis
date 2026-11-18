@@ -11,7 +11,7 @@ import io
 import os
 import re
 import wave
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, List, Optional, TypeVar
 
 import httpx
@@ -95,16 +95,13 @@ def _pcm_to_wav(pcm: bytes, sample_rate: int = _PCM_SAMPLE_RATE) -> bytes:
     return buf.getvalue()
 
 
-def _fish_synthesize(
-    api_key: str,
+def _fish_payload(
     text: str,
-    voice_id: str = "",
-    model: str = _DEFAULT_MODEL,
-    output_format: str = "mp3",
-    speed: float = 1.0,
-    sample_rate: int = _PCM_SAMPLE_RATE,
-) -> bytes:
-    """Call the Fish Audio TTS API and return raw audio bytes."""
+    voice_id: str,
+    output_format: str,
+    speed: float,
+    sample_rate: int,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "text": text,
         "format": output_format,
@@ -123,7 +120,19 @@ def _fish_synthesize(
     if speed != 1.0:
         # Fish Audio accepts speed in [0.5, 2.0].
         payload["prosody"] = {"speed": max(0.5, min(2.0, speed))}
+    return payload
 
+
+def _fish_synthesize(
+    api_key: str,
+    text: str,
+    voice_id: str = "",
+    model: str = _DEFAULT_MODEL,
+    output_format: str = "mp3",
+    speed: float = 1.0,
+    sample_rate: int = _PCM_SAMPLE_RATE,
+) -> bytes:
+    """Call the Fish Audio TTS API and return raw audio bytes."""
     return _request(
         httpx.post,
         "/v1/tts",
@@ -133,7 +142,7 @@ def _fish_synthesize(
             "Content-Type": "application/json",
             "model": model or _DEFAULT_MODEL,
         },
-        json=payload,
+        json=_fish_payload(text, voice_id, output_format, speed, sample_rate),
         timeout=120.0,
     )
 
@@ -204,6 +213,51 @@ class FishAudioTTSBackend(TTSBackend):
             sample_rate=sample_rate,
             metadata={"backend": "fish_audio", "model": self._model},
         )
+
+    def stream_synthesize(
+        self,
+        text: str,
+        *,
+        voice_id: str = "",
+        speed: float = 1.0,
+        output_format: str = "mp3",
+    ) -> Iterator[bytes]:
+        """Yield audio as Fish Audio generates it.
+
+        Waiting for the whole clip is most of the delay between a reply and the
+        first spoken word, so the HTTP body is passed straight through.
+        """
+        if not self._api_key:
+            raise RuntimeError("FISH_AUDIO_API_KEY not set")
+        if _KOKORO_VOICE_RE.match(voice_id):
+            voice_id = ""
+        voice_id = voice_id or self._voice_id
+        fmt = "mp3" if output_format not in _OUTPUT_FORMATS else output_format
+        key = _normalize_api_key(self._api_key)
+        try:
+            with httpx.stream(
+                "POST",
+                f"{_FISH_API_BASE}/v1/tts",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "model": self._model or _DEFAULT_MODEL,
+                },
+                json=_fish_payload(text, voice_id, fmt, speed, 44100),
+                timeout=120.0,
+            ) as response:
+                response.raise_for_status()
+                yield from response.iter_bytes()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                f"Fish Audio request failed (HTTP {exc.response.status_code})"
+            ) from None
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Fish Audio request failed ({type(exc).__name__})"
+            ) from None
 
     def available_voices(self) -> List[str]:
         if not self._api_key:
