@@ -16,6 +16,7 @@ allowance is gone.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -255,6 +256,19 @@ class FailoverEngine(InferenceEngine):
         self.quota_cooldown_seconds = quota_cooldown_seconds
         self.switches = 0
         self.last_provider = ""
+        # A provider that accepts the connection and then says nothing must not
+        # hold a voice turn hostage: bound the wait for the first token and let
+        # the next provider answer. The default is generous enough for a slow
+        # reasoning model, short enough that silence is never mistaken for an
+        # answer.
+        try:
+            self.first_token_timeout = float(
+                os.environ.get("OPENJARVIS_FIRST_TOKEN_TIMEOUT", "8")
+            )
+        except ValueError:
+            self.first_token_timeout = 8.0
+        if self.first_token_timeout <= 0:
+            self.first_token_timeout = 8.0
 
     # -- Introspection -------------------------------------------------------
 
@@ -407,6 +421,17 @@ class FailoverEngine(InferenceEngine):
         self.last_provider = self._slots[index].label
 
     @staticmethod
+    async def _discard(agen: Any) -> None:
+        """Close an abandoned provider stream without masking the failover."""
+        close = getattr(agen, "aclose", None)
+        if close is None:
+            return
+        try:
+            await close()
+        except Exception:  # noqa: BLE001 - the provider is already gone
+            pass
+
+    @staticmethod
     def _should_fail_over(exc: BaseException) -> bool:
         # A too-long conversation fails the same way everywhere; report it.
         return not looks_like_context_length_error(str(exc))
@@ -490,15 +515,27 @@ class FailoverEngine(InferenceEngine):
                 **kwargs,
             )
             try:
-                first = await anext(agen)
+                first = await asyncio.wait_for(
+                    anext(agen), timeout=self.first_token_timeout
+                )
             except StopAsyncIteration:
                 self._record_success(index)
                 return
+            except asyncio.TimeoutError:
+                exc = EngineConnectionError(
+                    f"{slot.label} did not start replying within "
+                    f"{self.first_token_timeout:.0f}s"
+                )
+                self._record_failure(index, exc)
+                errors.append(f"{slot.label}: {exc}")
+                await self._discard(agen)
+                continue
             except Exception as exc:  # noqa: BLE001 - fail over before any output
                 if not self._should_fail_over(exc):
                     raise
                 self._record_failure(index, exc)
                 errors.append(f"{slot.label}: {exc}")
+                await self._discard(agen)
                 continue
             self._record_success(index)
             if errors:
@@ -541,15 +578,27 @@ class FailoverEngine(InferenceEngine):
                 **kwargs,
             )
             try:
-                first = await anext(agen)
+                first = await asyncio.wait_for(
+                    anext(agen), timeout=self.first_token_timeout
+                )
             except StopAsyncIteration:
                 self._record_success(index)
                 return
+            except asyncio.TimeoutError:
+                exc = EngineConnectionError(
+                    f"{slot.label} did not start replying within "
+                    f"{self.first_token_timeout:.0f}s"
+                )
+                self._record_failure(index, exc)
+                errors.append(f"{slot.label}: {exc}")
+                await self._discard(agen)
+                continue
             except Exception as exc:  # noqa: BLE001 - fail over before any output
                 if not self._should_fail_over(exc):
                     raise
                 self._record_failure(index, exc)
                 errors.append(f"{slot.label}: {exc}")
+                await self._discard(agen)
                 continue
             self._record_success(index)
             yield first

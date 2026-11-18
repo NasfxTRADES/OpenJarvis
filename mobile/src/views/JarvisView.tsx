@@ -238,6 +238,9 @@ export function JarvisView({
   const recognizerRef = useRef<Recognizer | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const heardSpeechRef = useRef(false);
+  const recordUtteranceRef = useRef<() => void>(() => {});
+  const fallbackActiveRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const sendRef = useRef<(text: string) => Promise<void>>(async () => {});
 
@@ -285,45 +288,110 @@ export function JarvisView({
   const ensureListening = useCallback(() => {
     if (!conversationRef.current || speakingRef.current || thinkingRef.current) return;
     const recognizer = recognizerRef.current;
-    if (!recognizer) return;
-    try {
-      recognizer.start();
-    } catch {
-      // Already running; the onend handler will restart it when it stops.
-    }
-  }, []);
-
-  const startRecordingFallback = useCallback(() => {
-    const stream = streamRef.current;
-    if (!stream || typeof MediaRecorder === 'undefined') {
-      setError('This browser cannot record audio.');
+    if (recognizer) {
+      try {
+        recognizer.start();
+      } catch {
+        // Already running; the onend handler will restart it when it stops.
+      }
       return;
     }
+    // Recording fallback: the next turn starts only once Jarvis has finished
+    // speaking, so his own voice is never transcribed as the operator's.
+    if (fallbackActiveRef.current) recordUtteranceRef.current();
+  }, []);
+
+  /**
+   * Record one utterance and transcribe it on the server.
+   *
+   * This is the fallback for browsers where speech recognition is missing or
+   * dead (iOS Safari often refuses a session that was not started from a tap).
+   * It records until the operator stops talking, then sends that turn; without
+   * endpointing the microphone would record the whole call and never answer.
+   */
+  const recordUtterance = useCallback(() => {
+    if (recorderRef.current || !conversationRef.current) return;
+    if (speakingRef.current || thinkingRef.current) return;
+    const stream = streamRef.current;
+    if (!stream || typeof MediaRecorder === 'undefined') {
+      setError('This browser cannot record audio for speech recognition.');
+      return;
+    }
+    fallbackActiveRef.current = true;
+    heardSpeechRef.current = false;
     const recorder = new MediaRecorder(stream);
     chunksRef.current = [];
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunksRef.current.push(event.data);
     };
     recorder.onstop = () => {
+      recorderRef.current = null;
+      setRecording(false);
       const blob = new Blob(chunksRef.current, {
         type: recorder.mimeType || 'audio/webm',
       });
       chunksRef.current = [];
-      setRecording(false);
-      if (!blob.size) return;
+      const heard = heardSpeechRef.current;
+      heardSpeechRef.current = false;
+      if (!heard || !blob.size) {
+        if (conversationRef.current) {
+          window.setTimeout(() => recordUtteranceRef.current(), 200);
+        }
+        return;
+      }
+      setThinking(true);
+      thinkingRef.current = true;
       void transcribeAudio(blob, 'voice.webm')
         .then((text) => {
-          if (text) void sendRef.current(text);
-          else if (conversationRef.current) startRecordingFallback();
+          if (text.trim()) return sendRef.current(text.trim());
+          setError(
+            status?.voice?.reason ||
+              "Didn't catch that — say it again, a little closer to the mic.",
+          );
         })
         .catch((err: unknown) => {
           setError(err instanceof ApiError ? err.message : 'Could not transcribe that.');
-          if (conversationRef.current) startRecordingFallback();
+        })
+        .finally(() => {
+          setThinking(false);
+          thinkingRef.current = false;
+          // The speaking/thinking effect restarts the next turn once the reply
+          // has finished playing.
         });
     };
-    recorder.start();
+    recorder.start(250);
     recorderRef.current = recorder;
     setRecording(true);
+
+    // End the utterance after a short silence so a turn can be answered while
+    // the call stays open.
+    let silenceTicks = 0;
+    const watch = window.setInterval(() => {
+      if (recorderRef.current !== recorder) {
+        window.clearInterval(watch);
+        return;
+      }
+      const level = meterRef.current?.read() ?? 0;
+      if (level > 0.06) {
+        heardSpeechRef.current = true;
+        silenceTicks = 0;
+      } else if (heardSpeechRef.current) {
+        silenceTicks += 1;
+      }
+      if (silenceTicks >= 10) {
+        window.clearInterval(watch);
+        if (recorder.state === 'recording') recorder.stop();
+      }
+    }, 120);
+    recorder.addEventListener('stop', () => window.clearInterval(watch));
+  }, [status?.voice?.reason]);
+
+  useEffect(() => {
+    recordUtteranceRef.current = recordUtterance;
+  }, [recordUtterance]);
+
+  const startRecordingFallback = useCallback(() => {
+    recordUtteranceRef.current();
   }, []);
 
   const startRecognising = useCallback(() => {
@@ -354,6 +422,14 @@ export function JarvisView({
       if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(event.error)) {
         conversationRef.current = false;
         setConversation(false);
+        return;
+      }
+      // The recogniser exists but cannot work here (no speech service, no
+      // network, unsupported language). Fall back to recording each turn and
+      // transcribing it on the server instead of sitting in silence.
+      if (conversationRef.current && event.error !== 'aborted' && event.error !== 'no-speech') {
+        recognizerRef.current = null;
+        startRecordingFallback();
       }
     };
     recognizer.onend = () => {
@@ -367,7 +443,7 @@ export function JarvisView({
     } catch {
       return false;
     }
-  }, [ensureListening]);
+  }, [ensureListening, startRecordingFallback]);
 
   const send = useCallback(
     async (text: string) => {
@@ -441,6 +517,7 @@ export function JarvisView({
   }, [send]);
 
   const releaseMic = useCallback(() => {
+    fallbackActiveRef.current = false;
     recognizerRef.current?.abort();
     recognizerRef.current = null;
     meterRef.current?.dispose();
@@ -468,23 +545,39 @@ export function JarvisView({
     // Unlock playback inside this tap: the first reply arrives later, and iOS
     // will not start audio outside a user gesture.
     queue.prime();
+
+    conversationRef.current = true;
+    setConversation(true);
+    setListening(true);
+    log('Microphone live');
+
+    // Safari only starts a recognition session that was opened inside the
+    // tap. Awaiting the microphone first spends that activation, so the
+    // recogniser is started synchronously here and the stream is requested in
+    // parallel (it is only needed for the level meter).
+    const micRequest = navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true },
+    });
+    const recognised = startRecognising();
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
+      const stream = await micRequest;
       streamRef.current = stream;
       const meter = new MicMeter();
       await meter.attach(stream);
       meterRef.current = meter;
     } catch {
-      setError('Microphone access was denied. Allow it for this site, then tap the core.');
-      return;
+      if (!recognised) {
+        conversationRef.current = false;
+        setConversation(false);
+        setListening(false);
+        setError('Microphone access was denied. Allow it for this site, then tap the core.');
+        return;
+      }
+      // Recognition has its own microphone; only the waveform is lost.
     }
-    conversationRef.current = true;
-    setConversation(true);
-    setListening(true);
-    log('Microphone live');
-    if (!startRecognising()) startRecordingFallback();
+
+    if (!recognised) startRecordingFallback();
   }, [log, queue, startRecognising, startRecordingFallback, status]);
 
   const endConversation = useCallback(() => {

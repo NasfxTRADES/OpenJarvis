@@ -486,15 +486,37 @@ class MobileRuntime:
         base_url: str = "",
     ) -> dict[str, Any]:
         provider = (provider or "").strip().lower()
-        if provider == "auto":
-            return await self._configure_auto()
-        if provider == "openrouter":
-            return await self._configure_openrouter(api_key=api_key, model=model)
-        if provider == "gemini":
-            return await self._configure_gemini(api_key=api_key, model=model)
-        if provider == "ollama":
-            return await self._configure_ollama(model=model, base_url=base_url)
-        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider!r}")
+        try:
+            if provider == "auto":
+                return await self._configure_auto()
+            if provider == "openrouter":
+                return await self._configure_openrouter(api_key=api_key, model=model)
+            if provider == "gemini":
+                return await self._configure_gemini(api_key=api_key, model=model)
+            if provider == "ollama":
+                return await self._configure_ollama(model=model, base_url=base_url)
+            raise HTTPException(
+                status_code=400, detail=f"Unknown provider: {provider!r}"
+            )
+        except HTTPException as exc:
+            # Pasting a key is not the only way to a working assistant: when a
+            # specific provider is refused (bad key, retired model, quota), keep
+            # the server's free chain live and say why instead of dead-ending
+            # the phone in a 400 with a silent assistant.
+            if provider == "auto" or exc.status_code not in (400, 502, 503):
+                raise
+            logger.warning(
+                "Provider setup failed for %s: %s", provider, exc.detail
+            )
+            try:
+                fallback = await self._configure_auto()
+            except HTTPException:
+                raise exc from None
+            fallback["notice"] = (
+                f"{exc.detail} Jarvis kept the server's provider chain "
+                "instead, so replies keep working."
+            )
+            return fallback
 
     async def _configure_auto(self) -> dict[str, Any]:
         """Use every free provider key on this server, with automatic failover."""

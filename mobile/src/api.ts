@@ -163,7 +163,13 @@ export function connectProvider(body: {
   api_key?: string;
   model?: string;
   base_url?: string;
-}): Promise<{ configured: boolean; provider: string; model: string; models: string[] }> {
+}): Promise<{
+  configured: boolean;
+  provider: string;
+  model: string;
+  models: string[];
+  notice?: string;
+}> {
   return request('/v1/mobile/setup', { method: 'POST', body: JSON.stringify(body) });
 }
 

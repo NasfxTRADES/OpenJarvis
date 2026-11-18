@@ -39,7 +39,7 @@ export function SettingsView({
       setModels(result.models || []);
       setSelected(result.model);
       setApiKey('');
-      setNotice(`Connected to ${result.model}`);
+      setNotice(result.notice || `Connected to ${result.model}`);
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not connect');
@@ -90,13 +90,20 @@ export function SettingsView({
   };
 
   const chain = status?.chain || [];
+  // A failover chain owns the model choice: every provider in it runs its own
+  // model, so "Use this model" on a chain would ask the server to configure a
+  // provider that may not even have a key (the old code sent OpenRouter and
+  // got a 400).
+  const chainActive = chain.length > 0 || status?.provider === 'auto';
 
   const provider =
     status?.provider === 'ollama'
       ? 'ollama'
       : status?.provider === 'gemini'
         ? 'gemini'
-        : 'openrouter';
+        : status?.provider === 'openrouter'
+          ? 'openrouter'
+          : 'auto';
 
   return (
     <div className="settings">
@@ -131,7 +138,7 @@ export function SettingsView({
       {error && <div className="banner banner-error">{error}</div>}
       {notice && <div className="banner banner-ok">{notice}</div>}
 
-      {status?.configured && models.length > 0 && (
+      {status?.configured && models.length > 0 && !chainActive && (
         <section className="setting-card">
           <h3>Model</h3>
           <p className="muted small">Swap models without re-entering your key.</p>
@@ -153,7 +160,14 @@ export function SettingsView({
             type="button"
             className="btn btn-primary"
             disabled={busy !== null || selected === status.model}
-            onClick={() => void run('model', { provider, model: selected })}
+            onClick={() =>
+              void run(
+                'model',
+                provider === 'auto'
+                  ? { provider: 'auto' }
+                  : { provider, model: selected },
+              )
+            }
           >
             {busy === 'model' ? 'Switching…' : 'Use this model'}
           </button>
