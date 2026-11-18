@@ -70,10 +70,9 @@ MOBILE_TOOL_ALLOWLIST: tuple[str, ...] = (
 # Gemini's free tier covers the Flash models (per model, per project); Pro and
 # preview models need a billing account, so they are listed after these.
 GEMINI_MODEL_PREFERENCE: tuple[str, ...] = (
-    "google/gemini-3.8-flash",
-    "google/gemini-3.5-flash-lite",
     "google/gemini-2.5-flash",
     "google/gemini-2.5-flash-lite",
+    "google/gemini-2.0-flash",
 )
 
 FALLBACK_FREE_MODELS: tuple[str, ...] = (

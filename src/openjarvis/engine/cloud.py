@@ -241,6 +241,17 @@ def _is_anthropic_model(model: str) -> bool:
     )
 
 
+def _google_model_id(model: str) -> str:
+    """The Gemini SDK expects ``gemini-2.5-flash``, not ``google/gemini-2.5-flash``.
+
+    The provider prefix is how this codebase names a model everywhere else, but
+    the Google client rejects it with a bare 404 for every model, which reads
+    like a provider outage instead of a naming mismatch.
+    """
+    name = model.removeprefix("google/").removeprefix("models/")
+    return name or model
+
+
 def _is_google_model(model: str) -> bool:
     return (
         "gemini" in model.lower()
@@ -1083,7 +1094,7 @@ class CloudEngine(InferenceEngine):
 
         t0 = time.monotonic()
         resp = self._google_client.models.generate_content(
-            model=model,
+            model=_google_model_id(model),
             contents=contents,
             config=config,
         )
@@ -1790,7 +1801,7 @@ class CloudEngine(InferenceEngine):
             config.system_instruction = system_text
 
         for chunk in self._google_client.models.generate_content_stream(
-            model=model,
+            model=_google_model_id(model),
             contents=contents,
             config=config,
         ):
@@ -1875,7 +1886,7 @@ class CloudEngine(InferenceEngine):
         stream_id = uuid.uuid4().hex
         final_usage: Dict[str, Any] | None = None
         for chunk in self._google_client.models.generate_content_stream(
-            model=model,
+            model=_google_model_id(model),
             contents=contents,
             config=config,
         ):
