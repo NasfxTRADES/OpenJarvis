@@ -220,6 +220,9 @@ export class SpeechQueue {
   private pendingResolve: (() => void) | null = null;
   private primed = false;
   speed = SPEECH_SPEED;
+  // False when the server has no TTS key. Every sentence would otherwise pay
+  // two failed round trips (ticket + audio) before the browser voice starts.
+  serverVoice = true;
 
   constructor(
     private readonly onBusyChange: (busy: boolean) => void,
@@ -368,6 +371,10 @@ export class SpeechQueue {
    * clip is the fallback.
    */
   private async playSentence(sentence: string): Promise<boolean> {
+    if (!this.serverVoice) {
+      await this.playBrowserVoice(sentence);
+      return false;
+    }
     try {
       const url = await this.urlFor(sentence);
       if (await this.playUrl(url)) return true;
@@ -380,6 +387,9 @@ export class SpeechQueue {
       await this.playBlob(blob);
       return true;
     } catch {
+      // The server has no usable voice: speak the rest of the conversation
+      // with the browser instead of paying two failed round trips per sentence.
+      this.serverVoice = false;
       await this.playBrowserVoice(sentence);
       return false;
     }
