@@ -158,20 +158,21 @@ export class SentenceSplitter {
     }
     if (ready.length) this.started = true;
 
-    if (!this.started && this.buffer.length > 44) {
+    if (!this.started && this.buffer.length > 22) {
       // First sound out fast: cut at a comma or dash if the reply has one.
+      // Every character held here is silence before Jarvis's first word.
       const clause = /[,;:—-]\s/.exec(this.buffer);
       if (clause) {
         const end = clause.index + clause[0].length;
         const piece = this.buffer.slice(0, end).trim();
-        if (piece.length >= 24) {
+        if (piece.length >= 14) {
           ready.push(piece);
           this.buffer = this.buffer.slice(end);
           this.started = true;
         }
-      } else if (this.buffer.length > 80) {
-        const cut = this.buffer.lastIndexOf(' ', 72);
-        const take = cut > 24 ? cut : 72;
+      } else if (this.buffer.length > 42) {
+        const cut = this.buffer.lastIndexOf(' ', 36);
+        const take = cut >= 18 ? cut : 36;
         ready.push(this.buffer.slice(0, take).trim());
         this.buffer = this.buffer.slice(take);
         this.started = true;
@@ -213,6 +214,9 @@ export class SpeechQueue {
   private buffer: Float32Array<ArrayBuffer> | null = null;
   private fallback: SpeechSynthesisUtterance | null = null;
   private cache = new Map<string, Promise<Blob>>();
+  // Tickets already minted for the next sentence, so the follow-up does not
+  // pay another round trip when its turn comes.
+  private urls = new Map<string, Promise<string>>();
   private pendingResolve: (() => void) | null = null;
   private primed = false;
   speed = SPEECH_SPEED;
@@ -272,6 +276,7 @@ export class SpeechQueue {
     this.pendingResolve = null;
     resolve?.();
     this.cache.clear();
+    this.urls.clear();
     if (this.playing) {
       this.playing = false;
       this.onBusyChange(false);
@@ -308,6 +313,17 @@ export class SpeechQueue {
     return this.audio;
   }
 
+  /** Ticket URL for one sentence, minted once and reused. */
+  private urlFor(text: string): Promise<string> {
+    const cached = this.urls.get(text);
+    if (cached) return cached;
+    const request = speechUrl(text, this.speed).finally(() => {
+      this.urls.delete(text);
+    });
+    this.urls.set(text, request);
+    return request;
+  }
+
   private fetchAudio(text: string): Promise<Blob> {
     const cached = this.cache.get(text);
     if (cached) return cached;
@@ -328,7 +344,7 @@ export class SpeechQueue {
       const next = this.sentences[1];
       // Request the following sentence's link while this one plays: paying the
       // round trip later is the gap that makes speech feel late.
-      if (next) void speechUrl(next, this.speed).catch(() => {});
+      if (next) void this.urlFor(next).catch(() => {});
       let serverVoice = true;
       try {
         serverVoice = await this.playSentence(sentence);
@@ -353,7 +369,7 @@ export class SpeechQueue {
    */
   private async playSentence(sentence: string): Promise<boolean> {
     try {
-      const url = await speechUrl(sentence, this.speed);
+      const url = await this.urlFor(sentence);
       if (await this.playUrl(url)) return true;
     } catch {
       // fall through to the buffered path

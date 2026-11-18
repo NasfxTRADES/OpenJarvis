@@ -252,6 +252,23 @@ def _google_model_id(model: str) -> str:
     return name or model
 
 
+def _google_thinking_config(model: str, genai_types: Any, *, budget: int = 0) -> Any:
+    """Turn Gemini's reasoning off so a spoken reply starts immediately.
+
+    Gemini 2.5/3 Flash models think before answering unless told not to, which
+    puts whole seconds of silence in front of the first spoken word. Only the
+    Flash family accepts a zero budget, and the setting does not exist on 2.0
+    or older models, so anything else keeps the SDK default.
+    """
+    name = _google_model_id(model).lower()
+    if "flash" not in name or not ("2.5" in name or "3" in name):
+        return None
+    try:
+        return genai_types.ThinkingConfig(thinking_budget=budget)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def _is_google_model(model: str) -> bool:
     return (
         "gemini" in model.lower()
@@ -1073,6 +1090,9 @@ class CloudEngine(InferenceEngine):
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
+        thinking = _google_thinking_config(model, genai_types)
+        if thinking is not None:
+            config.thinking_config = thinking
         if system_text:
             config.system_instruction = system_text
 
@@ -1797,6 +1817,9 @@ class CloudEngine(InferenceEngine):
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
+        thinking = _google_thinking_config(model, genai_types)
+        if thinking is not None:
+            config.thinking_config = thinking
         if system_text:
             config.system_instruction = system_text
 
@@ -1875,6 +1898,9 @@ class CloudEngine(InferenceEngine):
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
+        thinking = _google_thinking_config(model, genai_types)
+        if thinking is not None:
+            config.thinking_config = thinking
         if system_text:
             config.system_instruction = system_text
 
