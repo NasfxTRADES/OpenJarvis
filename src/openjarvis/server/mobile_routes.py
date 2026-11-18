@@ -77,9 +77,9 @@ MOBILE_TOOL_ALLOWLIST: tuple[str, ...] = (
 # happens to order first.
 GEMINI_MODEL_PREFERENCE: tuple[str, ...] = (
     "google/gemini-3.8-flash",
-    "google/gemini-3-flash",
-    "google/gemini-2.5-flash",
-    "google/gemini-2.5-flash-lite",
+    "google/gemini-3.6-flash",
+    "google/gemini-3.5-flash-lite",
+    "google/gemini-3.1-flash-lite",
 )
 
 FALLBACK_FREE_MODELS: tuple[str, ...] = (

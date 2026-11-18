@@ -71,11 +71,11 @@ PREFERRED_MODELS: Dict[str, tuple[str, ...]] = {
     ),
     "gemini": (
         # Google retires Flash models for new keys without removing them from
-        # the catalogue, and the 404 names the replacement. 3.8 Flash is the
-        # current default; the older ones stay as last resorts.
+        # the catalogue, and the 404 names the replacement. These are the ids
+        # the free tier currently serves; every one of them exists.
         "google/gemini-3.8-flash",
-        "google/gemini-3-flash",
-        "google/gemini-2.5-flash",
+        "google/gemini-3.6-flash",
+        "google/gemini-3.5-flash-lite",
     ),
     "mistral": (
         "mistral/mistral-small-latest",
