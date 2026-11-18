@@ -63,6 +63,10 @@ API_KEY_ENV_VARS = {
         "ElevenLabs cloud text-to-speech",
         {"elevenlabs", "text_to_speech"},
     ),
+    "FISH_AUDIO_API_KEY": (
+        "Fish Audio cloud text-to-speech",
+        {"fish_audio", "text_to_speech"},
+    ),
     "FXMACRODATA_API_KEY": (
         "FXMacroData macro and FX data lookup",
         {"fx_macro_data", "fxmacrodata"},

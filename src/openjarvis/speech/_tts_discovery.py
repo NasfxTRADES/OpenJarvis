@@ -16,7 +16,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Priority order: local first, then cloud.
-TTS_BACKEND_ORDER = ("kokoro", "openai_tts", "cartesia", "elevenlabs")
+TTS_BACKEND_ORDER = (
+    "kokoro",
+    "openai_tts",
+    "cartesia",
+    "elevenlabs",
+    "fish_audio",
+)
 
 # Voice IDs are backend-specific and NOT portable. ``speech.voice_id`` applies
 # only to ``speech.tts_backend``; if synthesis falls back to another backend we
@@ -26,6 +32,9 @@ BACKEND_DEFAULT_VOICE = {
     "openai_tts": "onyx",  # deepest OpenAI preset
     "cartesia": "",  # no safe static default; let Cartesia choose
     "elevenlabs": "JBFqnCBsd6RMkjVDRZzb",  # "George", British male
+    # Fish Audio voices are model IDs owned by an account; without an explicit
+    # reference the account's default voice speaks, so there is no static ID.
+    "fish_audio": "",
 }
 
 

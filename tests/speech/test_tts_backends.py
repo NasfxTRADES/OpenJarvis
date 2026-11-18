@@ -856,3 +856,142 @@ def test_elevenlabs_missing_key_raises(monkeypatch):
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="ELEVENLABS_API_KEY"):
         ElevenLabsTTSBackend().synthesize("Hello")
+
+
+# ---------------------------------------------------------------------------
+# Fish Audio backend tests
+# ---------------------------------------------------------------------------
+
+
+def test_fish_audio_registered():
+    from openjarvis.speech.fish_tts import FishAudioTTSBackend
+
+    TTSRegistry.register_value("fish_audio", FishAudioTTSBackend)
+    assert TTSRegistry.contains("fish_audio")
+
+
+def test_fish_audio_health_requires_key(monkeypatch):
+    from openjarvis.speech.fish_tts import FishAudioTTSBackend
+
+    monkeypatch.delenv("FISH_AUDIO_API_KEY", raising=False)
+    monkeypatch.delenv("FISH_API_KEY", raising=False)
+    assert FishAudioTTSBackend().health() is False
+    assert FishAudioTTSBackend(api_key="fake-key").health() is True
+
+
+def test_fish_audio_accepts_fish_api_key_alias(monkeypatch):
+    from openjarvis.speech.fish_tts import FishAudioTTSBackend
+
+    monkeypatch.delenv("FISH_AUDIO_API_KEY", raising=False)
+    monkeypatch.setenv("FISH_API_KEY", "alias-key")
+    assert FishAudioTTSBackend().health() is True
+
+
+def test_fish_audio_synthesize_mp3():
+    from openjarvis.speech.fish_tts import FishAudioTTSBackend
+
+    backend = FishAudioTTSBackend(api_key="fake-key")
+    with patch(
+        "openjarvis.speech.fish_tts._fish_synthesize",
+        return_value=b"fake-mp3",
+    ) as synth:
+        result = backend.synthesize(
+            "Hello", voice_id="80b49b8aebaa4ada87b19ff5ac94122b"
+        )
+
+    assert result.audio == b"fake-mp3"
+    assert result.format == "mp3"
+    assert result.voice_id == "80b49b8aebaa4ada87b19ff5ac94122b"
+    assert result.sample_rate == 44100
+    assert synth.call_args.kwargs["voice_id"] == "80b49b8aebaa4ada87b19ff5ac94122b"
+    assert synth.call_args.kwargs["output_format"] == "mp3"
+
+
+def test_fish_audio_wav_requests_pcm_and_wraps_it():
+    import io
+    import wave
+
+    from openjarvis.speech.fish_tts import FishAudioTTSBackend
+
+    pcm = b"\x00\x01" * 100
+    backend = FishAudioTTSBackend(api_key="fake-key")
+    with patch(
+        "openjarvis.speech.fish_tts._fish_synthesize",
+        return_value=pcm,
+    ) as synth:
+        result = backend.synthesize("Hello", output_format="wav")
+
+    # Fish Audio always answers PCM for this path so the container is valid.
+    assert synth.call_args.kwargs["output_format"] == "pcm"
+    assert result.format == "wav"
+    with wave.open(io.BytesIO(result.audio)) as wf:
+        assert wf.getframerate() == 24000
+        assert wf.getnchannels() == 1
+        assert wf.readframes(wf.getnframes()) == pcm
+
+
+@pytest.mark.parametrize("kokoro_voice", ["bm_george", "pf_dora", "af_heart"])
+def test_fish_audio_ignores_kokoro_voice_ids(monkeypatch, kokoro_voice):
+    from openjarvis.speech.fish_tts import FishAudioTTSBackend
+
+    monkeypatch.delenv("FISH_AUDIO_VOICE_ID", raising=False)
+    monkeypatch.delenv("FISH_VOICE_ID", raising=False)
+    backend = FishAudioTTSBackend(api_key="fake-key")
+    with patch(
+        "openjarvis.speech.fish_tts._fish_synthesize",
+        return_value=b"fake-mp3",
+    ) as synth:
+        backend.synthesize("Olá", voice_id=kokoro_voice)
+
+    # No reference means the account's own default voice speaks.
+    assert synth.call_args.kwargs["voice_id"] == ""
+
+
+def test_fish_audio_env_voice_used_when_none_given(monkeypatch):
+    from openjarvis.speech.fish_tts import FishAudioTTSBackend
+
+    monkeypatch.setenv("FISH_AUDIO_VOICE_ID", "envVoice123")
+    backend = FishAudioTTSBackend(api_key="fake-key")
+    with patch(
+        "openjarvis.speech.fish_tts._fish_synthesize",
+        return_value=b"fake-mp3",
+    ) as synth:
+        backend.synthesize("Hello", voice_id="bm_george")
+
+    assert synth.call_args.kwargs["voice_id"] == "envVoice123"
+
+
+def test_fish_audio_payload_pins_free_model_and_clamps_speed():
+    from openjarvis.speech.fish_tts import _fish_synthesize
+
+    with patch("openjarvis.speech.fish_tts.httpx.post") as post:
+        post.return_value.content = b"audio"
+        _fish_synthesize("key", "Hello", voice_id="v", speed=2.0)
+        _fish_synthesize("key", "Hello", voice_id="v", speed=1.0)
+
+    fast, normal = post.call_args_list
+    assert fast.kwargs["headers"]["model"] == "s2.1-pro-free"
+    assert fast.kwargs["headers"]["Authorization"] == "Bearer key"
+    assert fast.kwargs["json"]["prosody"] == {"speed": 2.0}
+    assert fast.kwargs["json"]["reference_id"] == "v"
+    assert "prosody" not in normal.kwargs["json"]
+    assert post.call_args_list[0].args[0].endswith("/v1/tts")
+
+
+def test_fish_audio_omits_reference_without_voice():
+    from openjarvis.speech.fish_tts import _fish_synthesize
+
+    with patch("openjarvis.speech.fish_tts.httpx.post") as post:
+        post.return_value.content = b"audio"
+        _fish_synthesize("key", "Hello")
+
+    assert "reference_id" not in post.call_args.kwargs["json"]
+
+
+def test_fish_audio_missing_key_raises(monkeypatch):
+    from openjarvis.speech.fish_tts import FishAudioTTSBackend
+
+    monkeypatch.delenv("FISH_AUDIO_API_KEY", raising=False)
+    monkeypatch.delenv("FISH_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="FISH_AUDIO_API_KEY"):
+        FishAudioTTSBackend().synthesize("Hello")
